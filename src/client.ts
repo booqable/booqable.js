@@ -1,7 +1,6 @@
 import { ClientOptions, RateLimit, OAuthToken } from './types';
 import { HttpClient } from './http-client';
 import { ResourceProxy } from './resource-proxy';
-import { OAuthAuth } from './auth/oauth';
 import resources from './resources.json';
 
 const DEFAULT_OPTIONS: Partial<ClientOptions> = {
