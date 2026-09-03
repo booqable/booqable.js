@@ -147,6 +147,25 @@ Supports HS256 (HMAC), RS256 (RSA), and ES256 (ECDSA) algorithms. RS256/ES256
 private keys must be PEM-encoded PKCS#8 (`-----BEGIN PRIVATE KEY-----`).
 [Learn more about request signing](https://developers.booqable.com/#authentication-request-signing).
 
+### Custom Authentication
+
+For anything the built-in methods don't cover (e.g. attaching a
+session-specific header when talking to the API through a proxy), pass a
+custom `auth` strategy — the JavaScript analog of booqable.rb's custom
+middleware support. It takes precedence over the built-in methods and is
+called before every request (and every retry attempt):
+
+```typescript
+const client = new BooqableClient({
+  apiEndpoint: '/api/booqable/proxy', // e.g. an authenticated same-origin proxy
+  auth: {
+    apply(request) {
+      request.headers['Authorization'] = `Bearer ${mySessionHandle}`
+    },
+  },
+})
+```
+
 ### Environment Variables
 
 In Node.js, all authentication options can be configured via environment variables:

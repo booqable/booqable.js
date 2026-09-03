@@ -1,13 +1,7 @@
+import type { AuthRequestContext, CustomAuthStrategy } from '../types.js'
+
 /** The mutable request an {@link AuthStrategy} decorates before it is sent. */
-export interface RequestContext {
-  method: string
-  /** Fully-qualified request URL, including the query string. */
-  url: string
-  headers: Record<string, string>
-  body?: string
-}
+export type RequestContext = AuthRequestContext
 
 /** Decorates outgoing requests with authentication. */
-export interface AuthStrategy {
-  apply(request: RequestContext): Promise<void>
-}
+export type AuthStrategy = CustomAuthStrategy

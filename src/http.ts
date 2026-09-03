@@ -157,13 +157,15 @@ export class HttpClient {
     return RateLimit.fromHeaders(this.lastResponse?.headers)
   }
 
-  /** The configured authentication strategy (OAuth > API key > single-use). */
+  /** The configured authentication strategy (custom > OAuth > API key > single-use). */
   auth(): AuthStrategy | null {
     if (this.authStrategy !== undefined) return this.authStrategy
 
     const options = this.options
 
-    if (options.clientId && options.clientSecret) {
+    if (options.auth) {
+      this.authStrategy = options.auth
+    } else if (options.clientId && options.clientSecret) {
       this.authStrategy = new OAuthAuth({
         clientId: options.clientId,
         clientSecret: options.clientSecret,

@@ -29,6 +29,7 @@ export const OPTION_KEYS: (keyof ClientOptions)[] = [
   'singleUseTokenUserId',
   'userAgent',
   'strictAttributes',
+  'auth',
 ]
 
 /**

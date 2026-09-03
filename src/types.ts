@@ -27,6 +27,24 @@ export type AroundRefreshToken = (refresh: () => Promise<void>) => Promise<void>
 /** Supported single-use token signing algorithms. */
 export type SingleUseTokenAlgorithm = 'HS256' | 'RS256' | 'ES256'
 
+/** The mutable request an auth strategy decorates before it is sent. */
+export interface AuthRequestContext {
+  method: string
+  /** Fully-qualified request URL, including the query string. */
+  url: string
+  headers: Record<string, string>
+  body?: string
+}
+
+/**
+ * Decorates outgoing requests with authentication. Pass one as the `auth`
+ * option to fully control authentication — the JavaScript analog of
+ * booqable.rb's custom middleware support.
+ */
+export interface CustomAuthStrategy {
+  apply(request: AuthRequestContext): Promise<void> | void
+}
+
 /**
  * Configuration options for {@link BooqableClient}.
  *
@@ -82,6 +100,13 @@ export interface ClientOptions {
   singleUseTokenUserId?: string
   /** User-Agent header value (ignored by browsers). */
   userAgent?: string
+  /**
+   * Custom authentication strategy, taking precedence over the built-in
+   * OAuth/API-key/single-use methods. Called before every request (and
+   * before every retry attempt) to decorate it — e.g. to attach a
+   * session-specific Authorization header.
+   */
+  auth?: CustomAuthStrategy
   /**
    * Raise {@link MissingAttribute} when reading attributes that are absent
    * from an API payload (default: true, matching booqable.rb).

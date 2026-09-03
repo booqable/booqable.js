@@ -198,3 +198,41 @@ describe('OAuthClient.normalizeToken', () => {
     )
   })
 })
+
+describe('custom auth strategy', () => {
+  it('takes precedence over built-in auth and runs per attempt', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    let calls = 0
+    const client = new BooqableClient({
+      companyId: 'demo',
+      apiKey: 'ignored-api-key',
+      auth: {
+        apply(request) {
+          calls += 1
+          request.headers['Authorization'] = `Bearer session-handle-${calls}`
+        },
+      },
+    })
+
+    await client.orders.list()
+    await client.orders.list()
+
+    expect(requests[0].headers['Authorization']).toBe('Bearer session-handle-1')
+    expect(requests[1].headers['Authorization']).toBe('Bearer session-handle-2')
+  })
+
+  it('supports async strategies', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient({
+      companyId: 'demo',
+      auth: {
+        async apply(request) {
+          request.headers['Authorization'] = 'Bearer async-token'
+        },
+      },
+    })
+
+    await client.orders.list()
+    expect(requests[0].headers['Authorization']).toBe('Bearer async-token')
+  })
+})
