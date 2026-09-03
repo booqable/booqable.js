@@ -1,11 +1,23 @@
-import { AxiosRequestConfig } from 'axios';
+import { AuthStrategy, RequestContext } from './strategy.js'
 
-export class ApiKeyAuth {
-  constructor(private apiKey: string) {}
+/**
+ * API key authentication.
+ *
+ * Adds the API key as a Bearer token in the Authorization header if no
+ * authorization header is already present.
+ *
+ * @see https://developers.booqable.com/#authentication-access-token
+ */
+export class ApiKeyAuth implements AuthStrategy {
+  private apiKey: string
 
-  async apply(config: AxiosRequestConfig): Promise<AxiosRequestConfig> {
-    config.headers = config.headers || {};
-    config.headers['Authorization'] = `Bearer ${this.apiKey}`;
-    return config;
+  constructor(apiKey: string) {
+    this.apiKey = apiKey
+  }
+
+  async apply(request: RequestContext): Promise<void> {
+    if (!request.headers['Authorization']) {
+      request.headers['Authorization'] = `Bearer ${this.apiKey}`
+    }
   }
 }

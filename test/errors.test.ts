@@ -1,156 +1,154 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest'
 import {
+  BadGateway,
+  BadRequest,
   BooqableError,
   ClientError,
-  ServerError,
-  NotFound,
-  Unauthorized,
-  BadRequest,
-  TooManyRequests,
-  UnprocessableEntity,
+  CompanyNotFound,
+  Conflict,
+  errorClassFromResponse,
+  FeatureNotEnabled,
+  Forbidden,
+  InternalServerError,
+  InvalidDateTimeFormat,
   InvalidFilter,
-  createError,
-} from '../src/errors';
-import { RateLimit } from '../src/types';
+  InvalidGrant,
+  NotFound,
+  raiseForResponse,
+  ReadOnlyMode,
+  RefreshTokenRevoked,
+  ServerError,
+  ServiceUnavailable,
+  TokenRevoked,
+  TooManyRequests,
+  Unauthorized,
+  UnknownAttribute,
+  UnprocessableEntity,
+} from '../src/errors.js'
+
+function classify(status: number, body = '', requestBody?: string) {
+  return errorClassFromResponse({ status, body, requestBody, url: 'https://demo.booqable.com/api/4/orders', method: 'get' })
+}
+
+describe('errorClassFromResponse', () => {
+  it('returns null for successful responses', () => {
+    expect(classify(200)).toBeNull()
+    expect(classify(204)).toBeNull()
+    expect(classify(302)).toBeNull()
+  })
+
+  it('maps status codes to error classes', () => {
+    expect(classify(400)).toBe(BadRequest)
+    expect(classify(401)).toBe(Unauthorized)
+    expect(classify(403)).toBe(Forbidden)
+    expect(classify(404)).toBe(NotFound)
+    expect(classify(409)).toBe(Conflict)
+    expect(classify(422)).toBe(UnprocessableEntity)
+    expect(classify(429)).toBe(TooManyRequests)
+    expect(classify(418)).toBe(ClientError)
+    expect(classify(500)).toBe(InternalServerError)
+    expect(classify(502)).toBe(BadGateway)
+    expect(classify(503)).toBe(ServiceUnavailable)
+    expect(classify(599)).toBe(ServerError)
+  })
+
+  it('classifies 400s by body content', () => {
+    expect(classify(400, 'unknown_attribute foo')).toBe(UnknownAttribute)
+    expect(classify(400, 'Invalid filter provided')).toBe(InvalidFilter)
+  })
+
+  it('classifies invalid_grant by the request grant_type', () => {
+    expect(classify(400, '{"error":"invalid_grant"}', 'grant_type=refresh_token&refresh_token=x')).toBe(
+      RefreshTokenRevoked
+    )
+    expect(classify(400, '{"error":"invalid_grant"}', 'grant_type=authorization_code&code=x')).toBe(InvalidGrant)
+    expect(classify(400, '{"error":"invalid_grant"}')).toBe(InvalidGrant)
+  })
+
+  it('classifies revoked tokens on 401', () => {
+    expect(classify(401, 'The access token is invalid (revoked)')).toBe(TokenRevoked)
+  })
+
+  it('classifies 402, 404, 422 and 503 refinements', () => {
+    expect(classify(402, 'feature_not_enabled')).toBe(FeatureNotEnabled)
+    expect(classify(404, 'Company not found')).toBe(CompanyNotFound)
+    expect(classify(422, 'value is not a datetime')).toBe(InvalidDateTimeFormat)
+    expect(classify(503, 'system is in read-only mode')).toBe(ReadOnlyMode)
+  })
+})
 
 describe('BooqableError', () => {
-  it('should create a basic error', () => {
-    const error = new BooqableError('Test error', 400);
-    expect(error.message).toBe('Test error');
-    expect(error.responseStatus).toBe(400);
-    expect(error.name).toBe('BooqableError');
-  });
+  it('builds a message from method, url, status and body', () => {
+    const error = new NotFound({
+      status: 404,
+      method: 'get',
+      url: 'https://demo.booqable.com/api/4/orders/123',
+      body: JSON.stringify({ message: 'Record not found' }),
+      headers: { 'content-type': 'application/json' },
+    })
 
-  it('should capture response details', () => {
-    const headers = { 'content-type': 'application/json' };
-    const body = { errors: [{ title: 'Error', detail: 'Details' }] };
-    const error = new BooqableError('Test', 400, headers, body);
+    expect(error.message).toContain('GET https://demo.booqable.com/api/4/orders/123: 404 - Record not found')
+    expect(error.responseStatus).toBe(404)
+    expect(error.name).toBe('NotFound')
+  })
 
-    expect(error.responseHeaders).toEqual(headers);
-    expect(error.responseBody).toEqual(body);
-    expect(error.errors).toEqual(body.errors);
-  });
+  it('redacts secrets from urls', () => {
+    const error = new BadRequest({
+      status: 400,
+      method: 'get',
+      url: 'https://demo.booqable.com/api/4/orders?api_key=super-secret',
+    })
 
-  it('should have a stack trace', () => {
-    const error = new BooqableError('Test error');
-    expect(error.stack).toBeDefined();
-  });
-});
+    expect(error.message).toContain('api_key=(redacted)')
+    expect(error.message).not.toContain('super-secret')
+  })
 
-describe('Error hierarchy', () => {
-  it('should have correct inheritance for ClientError', () => {
-    const error = new ClientError('Client error', 400);
-    expect(error).toBeInstanceOf(BooqableError);
-    expect(error).toBeInstanceOf(ClientError);
-    expect(error.name).toBe('ClientError');
-  });
+  it('exposes JSON:API validation errors', () => {
+    const error = new UnprocessableEntity({
+      status: 422,
+      method: 'post',
+      url: 'https://demo.booqable.com/api/4/orders',
+      headers: { 'content-type': 'application/vnd.api+json' },
+      body: JSON.stringify({ errors: [{ code: 'blank', detail: 'starts_at is blank' }] }),
+    })
 
-  it('should have correct inheritance for ServerError', () => {
-    const error = new ServerError('Server error', 500);
-    expect(error).toBeInstanceOf(BooqableError);
-    expect(error).toBeInstanceOf(ServerError);
-    expect(error.name).toBe('ServerError');
-  });
+    expect(error.errors).toEqual([{ code: 'blank', detail: 'starts_at is blank' }])
+    expect(error.message).toContain('Error summary')
+    expect(error.message).toContain('starts_at is blank')
+  })
 
-  it('should have correct inheritance for NotFound', () => {
-    const error = new NotFound('Not found', 404);
-    expect(error).toBeInstanceOf(BooqableError);
-    expect(error).toBeInstanceOf(ClientError);
-    expect(error).toBeInstanceOf(NotFound);
-    expect(error.name).toBe('NotFound');
-  });
-});
+  it('carries rate limit context for TooManyRequests', () => {
+    const error = new TooManyRequests({
+      status: 429,
+      method: 'get',
+      url: 'https://demo.booqable.com/api/4/orders',
+      headers: { 'X-RateLimit-Limit': '100', 'X-RateLimit-Remaining': '0', 'X-RateLimit-Period': '60' },
+    })
 
-describe('TooManyRequests', () => {
-  it('should include rate limit context', () => {
-    const rateLimit: RateLimit = {
-      limit: 100,
-      remaining: 0,
-      period: 60,
-      resetsAt: new Date(),
-      resetsIn: 60,
-    };
+    expect(error.context?.limit).toBe(100)
+    expect(error.context?.remaining).toBe(0)
+    expect(error.context?.resetsIn).toBe(60)
+  })
 
-    const error = new TooManyRequests('Rate limited', 429, {}, {}, rateLimit);
-    expect(error.context).toEqual(rateLimit);
-    expect(error.context?.limit).toBe(100);
-  });
-});
+  it('has no rate limit context for other errors', () => {
+    const error = new BadRequest({ status: 400, method: 'get', url: 'x' })
+    expect(error.context).toBeNull()
+  })
+})
 
-describe('createError', () => {
-  it('should create error based on status code', () => {
-    const error = createError(404, {}, { errors: [{ detail: 'Not found' }] });
-    expect(error).toBeInstanceOf(NotFound);
-    expect(error.message).toBe('Not found');
-  });
+describe('raiseForResponse', () => {
+  it('throws for error statuses and passes for success', () => {
+    expect(() => raiseForResponse({ status: 200 })).not.toThrow()
+    expect(() => raiseForResponse({ status: 404, url: 'x', method: 'get' })).toThrow(NotFound)
+  })
 
-  it('should create error based on error code', () => {
-    const body = {
-      errors: [
-        {
-          code: 'invalid_filter',
-          detail: 'Invalid filter',
-        },
-      ],
-    };
-    const error = createError(400, {}, body);
-    expect(error).toBeInstanceOf(InvalidFilter);
-    expect(error.message).toBe('Invalid filter');
-  });
-
-  it('should use title if detail is not present', () => {
-    const body = {
-      errors: [
-        {
-          title: 'Bad Request',
-        },
-      ],
-    };
-    const error = createError(400, {}, body);
-    expect(error).toBeInstanceOf(BadRequest);
-    expect(error.message).toBe('Bad Request');
-  });
-
-  it('should fall back to generic message', () => {
-    const error = createError(418, {}, {});
-    expect(error.message).toBe('HTTP 418 Error');
-  });
-
-  it('should create ServerError for 500 status', () => {
-    const error = createError(500, {}, { errors: [{ detail: 'Server error' }] });
-    expect(error).toBeInstanceOf(ServerError);
-  });
-
-  it('should create ClientError for unknown 4xx status', () => {
-    const error = createError(418, {}, {});
-    expect(error).toBeInstanceOf(ClientError);
-  });
-
-  it('should create TooManyRequests with context', () => {
-    const rateLimit: RateLimit = {
-      limit: 100,
-      remaining: 0,
-      period: 60,
-      resetsAt: new Date(),
-      resetsIn: 60,
-    };
-    const error = createError(
-      429,
-      {},
-      { errors: [{ detail: 'Too many requests' }] },
-      rateLimit
-    );
-    expect(error).toBeInstanceOf(TooManyRequests);
-    expect((error as TooManyRequests).context).toEqual(rateLimit);
-  });
-
-  it('should create Unauthorized for 401', () => {
-    const error = createError(401, {}, {});
-    expect(error).toBeInstanceOf(Unauthorized);
-  });
-
-  it('should create UnprocessableEntity for 422', () => {
-    const error = createError(422, {}, {});
-    expect(error).toBeInstanceOf(UnprocessableEntity);
-  });
-});
+  it('thrown errors are instances of BooqableError', () => {
+    try {
+      raiseForResponse({ status: 500, url: 'x', method: 'get' })
+      expect.unreachable()
+    } catch (error) {
+      expect(error).toBeInstanceOf(BooqableError)
+      expect(error).toBeInstanceOf(ServerError)
+    }
+  })
+})

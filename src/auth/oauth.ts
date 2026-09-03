@@ -1,118 +1,86 @@
-import { AxiosRequestConfig } from 'axios';
-import axios from 'axios';
-import { OAuthToken } from '../types';
+import { AuthStrategy, RequestContext } from './strategy.js'
+import { OAuthClient } from '../oauth-client.js'
+import { AroundRefreshToken, ReadToken, TokenHash, WriteToken } from '../types.js'
 
-export interface OAuthOptions {
-  clientId: string;
-  clientSecret: string;
-  apiEndpoint: string;
-  readToken?: () => Promise<OAuthToken | null> | OAuthToken | null;
-  writeToken?: (token: OAuthToken) => Promise<void> | void;
+export interface OAuthAuthOptions {
+  clientId: string
+  clientSecret: string
+  apiEndpoint: string
+  redirectUri?: string
+  readToken?: ReadToken
+  writeToken?: WriteToken
+  aroundRefreshToken?: AroundRefreshToken
 }
 
-export class OAuthAuth {
-  private token: OAuthToken | null = null;
+/**
+ * OAuth2 authentication.
+ *
+ * Reads the stored access token, refreshes it when it is expired or about
+ * to expire, and adds it as a Bearer token. Mirrors
+ * Booqable::Middleware::Auth::OAuth.
+ */
+export class OAuthAuth implements AuthStrategy {
+  /**
+   * Refresh the token this many seconds before it actually expires. A
+   * request sent in the last moment of a token's life can still be
+   * rejected once network latency or clock skew pushes it past the
+   * expiry boundary server-side.
+   */
+  static REFRESH_BUFFER_SECONDS = 60
 
-  constructor(private options: OAuthOptions) {}
+  readonly client: OAuthClient
+  private options: OAuthAuthOptions
 
-  async apply(config: AxiosRequestConfig): Promise<AxiosRequestConfig> {
-    await this.ensureValidToken();
-
-    if (this.token) {
-      config.headers = config.headers || {};
-      config.headers['Authorization'] = `Bearer ${this.token.access_token}`;
-    }
-
-    return config;
+  constructor(options: OAuthAuthOptions) {
+    this.options = options
+    this.client = new OAuthClient({
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      apiEndpoint: options.apiEndpoint,
+      redirectUri: options.redirectUri,
+    })
   }
 
-  async authenticateWithCode(code: string, redirectUri: string): Promise<OAuthToken> {
-    const tokenUrl = `${this.options.apiEndpoint}/oauth/token`;
+  async apply(request: RequestContext): Promise<void> {
+    let token: TokenHash = {}
 
-    const response = await axios.post(tokenUrl, {
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirectUri,
-      client_id: this.options.clientId,
-      client_secret: this.options.clientSecret,
-    });
+    const refreshSequence = async () => {
+      token = OAuthClient.normalizeToken((await this.options.readToken?.()) || {})
 
-    const token: OAuthToken = response.data;
-
-    // Calculate expires_at if not provided
-    if (token.expires_in && !token.expires_at) {
-      token.expires_at = Math.floor(Date.now() / 1000) + token.expires_in;
-    }
-
-    await this.saveToken(token);
-    return token;
-  }
-
-  private async ensureValidToken(): Promise<void> {
-    // Load token from storage if not in memory
-    if (!this.token && this.options.readToken) {
-      this.token = await Promise.resolve(this.options.readToken());
-    }
-
-    // Check if token is expired
-    if (this.token && this.isTokenExpired(this.token)) {
-      if (this.token.refresh_token) {
-        await this.refreshToken();
-      } else {
-        this.token = null;
+      if (this.expiresSoon(token)) {
+        token = await this.refreshToken(token)
       }
     }
-  }
 
-  private isTokenExpired(token: OAuthToken): boolean {
-    if (!token.expires_at) {
-      return false; // If no expiry, assume it's valid
+    // When the host application provides an around-callback (e.g. an
+    // advisory lock), the read+check+refresh sequence runs inside it so
+    // concurrent callers cannot interleave a read with another caller's
+    // refresh.
+    if (this.options.aroundRefreshToken) {
+      await this.options.aroundRefreshToken(refreshSequence)
+    } else {
+      await refreshSequence()
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    // Consider token expired 60 seconds before actual expiry
-    return token.expires_at - now < 60;
-  }
-
-  private async refreshToken(): Promise<void> {
-    if (!this.token?.refresh_token) {
-      throw new Error('No refresh token available');
-    }
-
-    const tokenUrl = `${this.options.apiEndpoint}/oauth/token`;
-
-    try {
-      const response = await axios.post(tokenUrl, {
-        grant_type: 'refresh_token',
-        refresh_token: this.token.refresh_token,
-        client_id: this.options.clientId,
-        client_secret: this.options.clientSecret,
-      });
-
-      const newToken: OAuthToken = response.data;
-
-      // Calculate expires_at if not provided
-      if (newToken.expires_in && !newToken.expires_at) {
-        newToken.expires_at = Math.floor(Date.now() / 1000) + newToken.expires_in;
-      }
-
-      await this.saveToken(newToken);
-    } catch (error) {
-      // If refresh fails, clear token
-      this.token = null;
-      throw error;
+    if (!request.headers['Authorization']) {
+      request.headers['Authorization'] = `Bearer ${token.access_token ?? ''}`
     }
   }
 
-  private async saveToken(token: OAuthToken): Promise<void> {
-    this.token = token;
-
-    if (this.options.writeToken) {
-      await Promise.resolve(this.options.writeToken(token));
-    }
+  /** Whether the token expires within the buffer, or has no usable expiry. */
+  private expiresSoon(token: TokenHash): boolean {
+    if (token.expires_at == null) return true
+    return Math.floor(Date.now() / 1000) >= Number(token.expires_at) - OAuthAuth.REFRESH_BUFFER_SECONDS
   }
 
-  getToken(): OAuthToken | null {
-    return this.token;
+  /**
+   * Refreshes the expired token and persists the new one via writeToken.
+   * A refresh failure always throws: the caller must never carry on with
+   * a stale or missing token.
+   */
+  private async refreshToken(token: TokenHash): Promise<TokenHash> {
+    const newToken = await this.client.refreshToken(token)
+    await this.options.writeToken?.(newToken)
+    return newToken
   }
 }

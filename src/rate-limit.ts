@@ -1,64 +1,37 @@
-import { RateLimit } from './types';
-
-export class RateLimitTracker {
-  private _limit: number = 0;
-  private _remaining: number = 0;
-  private _period: number = 0;
-  private _resetsAt: Date = new Date();
+/**
+ * Rate limit information from API responses.
+ *
+ * Contains rate limiting information extracted from HTTP response headers.
+ * This information is available when rate limit errors occur, or from
+ * {@link BooqableClient.rateLimit} to monitor API usage.
+ */
+export class RateLimit {
+  /** Max tries per rate limit period. */
+  limit: number | null = null
+  /** Remaining tries per rate limit period. */
+  remaining: number | null = null
+  /** Number of seconds until the rate limit resets. */
+  resetsIn: number | null = null
 
   /**
-   * Update rate limit information from response headers
+   * Extract rate limit information from HTTP response headers.
+   * Falls back to a value of 1 for missing headers, matching booqable.rb.
    */
-  update(headers: Record<string, string>): void {
-    const limit = headers['x-ratelimit-limit'];
-    const remaining = headers['x-ratelimit-remaining'];
-    const period = headers['x-ratelimit-period'];
+  static fromHeaders(headers: Headers | Record<string, string> | undefined | null): RateLimit {
+    const info = new RateLimit()
+    if (!headers) return info
 
-    if (limit) {
-      this._limit = parseInt(limit, 10);
+    const get = (name: string): string | null => {
+      if (typeof (headers as Headers).get === 'function') return (headers as Headers).get(name)
+      const record = headers as Record<string, string>
+      const key = Object.keys(record).find((k) => k.toLowerCase() === name.toLowerCase())
+      return key ? record[key] : null
     }
 
-    if (remaining) {
-      this._remaining = parseInt(remaining, 10);
-    }
+    info.limit = parseInt(get('X-RateLimit-Limit') || '1', 10)
+    info.remaining = parseInt(get('X-RateLimit-Remaining') || '1', 10)
+    info.resetsIn = parseInt(get('X-RateLimit-Period') || '1', 10)
 
-    if (period) {
-      this._period = parseInt(period, 10);
-      this._resetsAt = new Date(Date.now() + this._period * 1000);
-    }
-  }
-
-  /**
-   * Get current rate limit information
-   */
-  get(): RateLimit {
-    const now = Date.now();
-    const resetsAtTime = this._resetsAt.getTime();
-    const resetsIn = Math.max(0, Math.floor((resetsAtTime - now) / 1000));
-
-    return {
-      limit: this._limit,
-      remaining: this._remaining,
-      period: this._period,
-      resetsAt: this._resetsAt,
-      resetsIn,
-    };
-  }
-
-  /**
-   * Check if rate limit has been reached
-   */
-  isLimitReached(): boolean {
-    return this._remaining === 0;
-  }
-
-  /**
-   * Reset rate limit tracking
-   */
-  reset(): void {
-    this._limit = 0;
-    this._remaining = 0;
-    this._period = 0;
-    this._resetsAt = new Date();
+    return info
   }
 }

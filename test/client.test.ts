@@ -1,238 +1,236 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { BooqableClient } from '../src/client';
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import Booqable, { BooqableClient, NotFound, ServerError } from '../src/index.js'
+import { jsonApiOrder, stubFetch } from './helpers.js'
+
+const clientOptions = { apiKey: 'test-key', companyId: 'demo' }
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  Booqable.reset()
+})
 
 describe('BooqableClient', () => {
-  describe('constructor', () => {
-    it('should create client with minimal options', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
+  it('makes GET requests with default headers and bearer auth', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-      expect(client).toBeInstanceOf(BooqableClient);
-    });
+    await client.get('orders')
 
-    it('should build API endpoint from domain and version', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        apiDomain: 'example.com',
-        apiVersion: 4,
-      });
+    expect(requests[0].url).toBe('https://demo.booqable.com/api/4/orders')
+    expect(requests[0].method).toBe('GET')
+    expect(requests[0].headers['Authorization']).toBe('Bearer test-key')
+    expect(requests[0].headers['Accept']).toBe('application/vnd.api+json')
+    expect(requests[0].headers['Content-Type']).toBe('application/vnd.api+json')
+    expect(requests[0].headers['User-Agent']).toMatch(/Booqable JavaScript Client/)
+  })
 
-      expect(client).toBeDefined();
-    });
+  it('serializes nested query params with brackets and joins arrays', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should use custom API endpoint if provided', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        apiEndpoint: 'https://custom.com/api',
-      });
+    await client.get('orders', {
+      include: ['customer', 'lines'],
+      filter: { status: 'reserved' },
+      page: { size: 5, number: 2 },
+    })
 
-      expect(client).toBeDefined();
-    });
+    const url = new URL(requests[0].url)
+    expect(url.searchParams.get('include')).toBe('customer,lines')
+    expect(url.searchParams.get('filter[status]')).toBe('reserved')
+    expect(url.searchParams.get('page[size]')).toBe('5')
+    expect(url.searchParams.get('page[number]')).toBe('2')
+  })
 
-    it('should load from environment variables', () => {
-      const originalApiKey = process.env.BOOQABLE_API_KEY;
-      const originalCompanyId = process.env.BOOQABLE_COMPANY_ID;
+  it('lifts a headers key into request headers', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-      process.env.BOOQABLE_API_KEY = 'env-api-key';
-      process.env.BOOQABLE_COMPANY_ID = 'env-company-id';
+    await client.get('orders', { headers: { 'X-Custom': 'yes' }, include: 'customer' })
 
-      const client = new BooqableClient({});
+    expect(requests[0].headers['X-Custom']).toBe('yes')
+    expect(new URL(requests[0].url).searchParams.get('include')).toBe('customer')
+    expect(new URL(requests[0].url).searchParams.get('headers')).toBeNull()
+  })
 
-      expect(client).toBeDefined();
+  it('sends JSON:API bodies for POST requests', async () => {
+    const { requests } = stubFetch({ body: { data: jsonApiOrder('1') } })
+    const client = new BooqableClient(clientOptions)
 
-      // Restore original values
-      if (originalApiKey) {
-        process.env.BOOQABLE_API_KEY = originalApiKey;
-      } else {
-        delete process.env.BOOQABLE_API_KEY;
-      }
-      if (originalCompanyId) {
-        process.env.BOOQABLE_COMPANY_ID = originalCompanyId;
-      } else {
-        delete process.env.BOOQABLE_COMPANY_ID;
-      }
-    });
-  });
+    await client.post('orders', { data: { type: 'orders', attributes: { status: 'draft' } } })
 
-  describe('resource proxies', () => {
-    let client: BooqableClient;
+    expect(requests[0].method).toBe('POST')
+    expect(JSON.parse(requests[0].body!)).toEqual({ data: { type: 'orders', attributes: { status: 'draft' } } })
+  })
 
-    beforeEach(() => {
-      client = new BooqableClient({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
-    });
+  it('decodes responses and tracks lastResponse and rate limits', async () => {
+    stubFetch({
+      body: { data: jsonApiOrder('1'), meta: { total: 1 } },
+      headers: { 'X-RateLimit-Limit': '300', 'X-RateLimit-Remaining': '299', 'X-RateLimit-Period': '60' },
+    })
+    const client = new BooqableClient(clientOptions)
 
-    it('should have orders resource', () => {
-      expect(client.orders).toBeDefined();
-    });
+    const document = await client.get('orders/1')
 
-    it('should have customers resource', () => {
-      expect(client.customers).toBeDefined();
-    });
+    expect(document.data.id).toBe('1')
+    expect(document.data.status).toBe('draft')
+    expect(client.lastResponse?.status).toBe(200)
+    expect(client.rateLimit().remaining).toBe(299)
+    expect(client.rateLimit().limit).toBe(300)
+  })
 
-    it('should have products resource', () => {
-      expect(client.products).toBeDefined();
-    });
+  it('throws typed errors and clears lastResponse on failure', async () => {
+    stubFetch({ body: { data: jsonApiOrder('1') } }, { status: 404, body: { message: 'Record not found' } })
+    const client = new BooqableClient({ ...clientOptions, noRetries: true })
 
-    it('should have items resource', () => {
-      expect(client.items).toBeDefined();
-    });
+    await client.get('orders/1')
+    expect(client.lastResponse).not.toBeNull()
 
-    it('should support resource() method', () => {
-      const ordersProxy = client.resource('orders');
-      expect(ordersProxy).toBeDefined();
-    });
+    await expect(client.get('orders/missing')).rejects.toThrow(NotFound)
+    expect(client.lastResponse).toBeNull()
+  })
 
-    it('should throw error for unknown resource', () => {
-      expect(() => {
-        client.resource('unknown-resource');
-      }).toThrow('Unknown resource: unknown-resource');
-    });
+  it('retries server errors up to two times', async () => {
+    const { requests } = stubFetch({ status: 503, body: 'unavailable' }, { status: 503, body: 'unavailable' }, { body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
+    client.http.sleep = async () => {}
 
-    it('should support resource aliases', () => {
-      expect(client.carriers).toBeDefined();
-      expect(client.app_carriers).toBeDefined();
-    });
-  });
+    const document = await client.get('orders')
 
-  describe('rateLimit', () => {
-    it('should return rate limit information', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
+    expect(requests).toHaveLength(3)
+    expect(document.data).toEqual([])
+  })
 
-      const rateLimit = client.rateLimit();
+  it('throws after exhausting retries', async () => {
+    const { requests } = stubFetch({ status: 500, body: 'boom' })
+    const client = new BooqableClient(clientOptions)
+    client.http.sleep = async () => {}
 
-      expect(rateLimit).toHaveProperty('limit');
-      expect(rateLimit).toHaveProperty('remaining');
-      expect(rateLimit).toHaveProperty('period');
-      expect(rateLimit).toHaveProperty('resetsAt');
-      expect(rateLimit).toHaveProperty('resetsIn');
-    });
-  });
+    await expect(client.get('orders')).rejects.toThrow(ServerError)
+    expect(requests).toHaveLength(3)
+  })
 
-  describe('lastResponse', () => {
-    it('should return null initially', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
+  it('does not retry when noRetries is set', async () => {
+    const { requests } = stubFetch({ status: 500, body: 'boom' })
+    const client = new BooqableClient({ ...clientOptions, noRetries: true })
 
-      expect(client.lastResponse).toBeNull();
-    });
-  });
+    await expect(client.get('orders')).rejects.toThrow(ServerError)
+    expect(requests).toHaveLength(1)
+  })
 
-  describe('static methods', () => {
-    it('should create client with create()', () => {
-      const client = BooqableClient.create({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
+  it('does not retry non-idempotent methods', async () => {
+    const { requests } = stubFetch({ status: 500, body: 'boom' })
+    const client = new BooqableClient(clientOptions)
 
-      expect(client).toBeInstanceOf(BooqableClient);
-    });
+    await expect(client.post('orders', { data: {} })).rejects.toThrow(ServerError)
+    expect(requests).toHaveLength(1)
+  })
 
-    it('should configure client with configure()', () => {
-      const client = BooqableClient.configure({
-        apiKey: 'test-key',
-        companyId: 'test-company',
-      });
+  it('retries network errors', async () => {
+    const responses = [() => Promise.reject(new TypeError('fetch failed')), () => Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'Content-Type': 'application/vnd.api+json' } }))]
+    let call = 0
+    vi.stubGlobal('fetch', vi.fn(() => responses[Math.min(call++, responses.length - 1)]()))
 
-      expect(client).toBeInstanceOf(BooqableClient);
-    });
-  });
+    const client = new BooqableClient(clientOptions)
+    client.http.sleep = async () => {}
 
-  describe('configuration options', () => {
-    it('should accept autoPaginate option', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        autoPaginate: true,
-      });
+    const document = await client.get('orders')
+    expect(document.data).toEqual([])
+    expect(call).toBe(2)
+  })
 
-      expect(client).toBeDefined();
-    });
+  it('exposes the skipRetries alias', () => {
+    const client = new BooqableClient({ ...clientOptions, skipRetries: true })
+    expect(client.options.noRetries).toBe(true)
+  })
+})
 
-    it('should accept perPage option', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        perPage: 50,
-      });
+describe('pagination', () => {
+  it('requests page size, number, and stats by default', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-      expect(client).toBeDefined();
-    });
+    await client.orders.list()
 
-    it('should accept debug option', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        debug: false,
-      });
+    const url = new URL(requests[0].url)
+    expect(url.searchParams.get('page[size]')).toBe('25')
+    expect(url.searchParams.get('page[number]')).toBe('1')
+    expect(url.searchParams.get('stats[total]')).toBe('count')
+  })
 
-      expect(client).toBeDefined();
-    });
+  it('fetches all pages when autoPaginate is enabled', async () => {
+    const page = (ids: string[]) => ({
+      body: {
+        data: ids.map((id) => jsonApiOrder(id)),
+        meta: { stats: { total: { count: 5 } } },
+      },
+      headers: { 'X-RateLimit-Remaining': '10' },
+    })
+    const { requests } = stubFetch(page(['1', '2']), page(['3', '4']), page(['5']))
+    const client = new BooqableClient({ ...clientOptions, autoPaginate: true, perPage: 2 })
 
-    it('should accept proxy option', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        proxy: 'http://proxy.example.com:8080',
-      });
+    const orders = await client.orders.list()
 
-      expect(client).toBeDefined();
-    });
+    expect(orders.map((order: any) => order.id)).toEqual(['1', '2', '3', '4', '5'])
+    expect(requests).toHaveLength(3)
+    expect(new URL(requests[2].url).searchParams.get('page[number]')).toBe('3')
+  })
 
-    it('should accept timeout option', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        timeout: 60000,
-      });
+  it('stops paginating when the rate limit is exhausted', async () => {
+    const page = (ids: string[], remaining: string) => ({
+      body: { data: ids.map((id) => jsonApiOrder(id)), meta: { stats: { total: { count: 4 } } } },
+      headers: { 'X-RateLimit-Remaining': remaining },
+    })
+    const { requests } = stubFetch(page(['1', '2'], '0'))
+    const client = new BooqableClient({ ...clientOptions, autoPaginate: true, perPage: 2 })
 
-      expect(client).toBeDefined();
-    });
-  });
+    const orders = await client.orders.list()
 
-  describe('OAuth methods', () => {
-    it('should have authenticateWithCode method', () => {
-      const client = new BooqableClient({
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret',
-        companyId: 'test-company',
-      });
+    expect(orders).toHaveLength(2)
+    expect(requests).toHaveLength(1)
+  })
 
-      expect(client.authenticateWithCode).toBeDefined();
-      expect(typeof client.authenticateWithCode).toBe('function');
-    });
+  it('respects an explicit page size', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should have getOAuthToken method', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-      });
+    await client.orders.list({ page: { size: 100 } })
 
-      expect(client.getOAuthToken).toBeDefined();
-      expect(typeof client.getOAuthToken).toBe('function');
-    });
+    expect(new URL(requests[0].url).searchParams.get('page[size]')).toBe('100')
+  })
+})
 
-    it('should return null from getOAuthToken when not using OAuth', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-      });
+describe('module-level Booqable', () => {
+  it('configures a default client and delegates resource methods', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
 
-      const token = client.getOAuthToken();
-      expect(token).toBeNull();
-    });
-  });
+    Booqable.configure({ apiKey: 'module-key', companyId: 'demo' })
+    const orders = await Booqable.orders.list()
 
-  describe('boomerang API version', () => {
-    it('should support boomerang API version', () => {
-      const client = new BooqableClient({
-        apiKey: 'test-key',
-        apiVersion: 'boomerang',
-      });
+    expect(orders).toEqual([])
+    expect(requests[0].headers['Authorization']).toBe('Bearer module-key')
+  })
 
-      expect(client).toBeDefined();
-    });
-  });
-});
+  it('supports callback-style configuration', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+
+    Booqable.configure((config) => {
+      config.apiKey = 'callback-key'
+      config.companyId = 'demo'
+    })
+    await Booqable.orders.list()
+
+    expect(requests[0].headers['Authorization']).toBe('Bearer callback-key')
+  })
+
+  it('rebuilds the client when configuration changes', async () => {
+    stubFetch({ body: { data: [] } })
+
+    Booqable.configure({ apiKey: 'key', companyId: 'demo' })
+    const first = Booqable.client()
+    expect(Booqable.client()).toBe(first)
+
+    Booqable.configure({ companyId: 'other' })
+    expect(Booqable.client()).not.toBe(first)
+    expect(Booqable.client().http.apiEndpoint).toBe('https://other.booqable.com/api/4')
+  })
+})

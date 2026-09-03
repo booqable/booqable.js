@@ -1,257 +1,138 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ResourceProxy } from '../src/resource-proxy';
-import { HttpClient } from '../src/http-client';
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BooqableClient } from '../src/client.js'
+import { MissingAttribute, NotFound } from '../src/errors.js'
+import { jsonApiOrder, stubFetch } from './helpers.js'
+
+const clientOptions = { apiKey: 'test-key', companyId: 'demo' }
+
+afterEach(() => vi.unstubAllGlobals())
 
 describe('ResourceProxy', () => {
-  let mockHttp: any;
-  let proxy: ResourceProxy;
+  it('lists resources', async () => {
+    const { requests } = stubFetch({ body: { data: [jsonApiOrder('1'), jsonApiOrder('2')] } })
+    const client = new BooqableClient(clientOptions)
 
-  beforeEach(() => {
-    mockHttp = {
-      get: vi.fn(),
-      post: vi.fn(),
-      put: vi.fn(),
-      delete: vi.fn(),
-      paginateAll: vi.fn(),
-      options: { autoPaginate: false },
-    };
+    const orders = await client.orders.list({ filter: { status: 'draft' } })
 
-    proxy = new ResourceProxy(mockHttp as HttpClient, 'orders', 'company-123');
-  });
+    expect(requests[0].url).toContain('https://demo.booqable.com/api/4/orders?')
+    expect(new URL(requests[0].url).searchParams.get('filter[status]')).toBe('draft')
+    expect(orders).toHaveLength(2)
+    expect(orders[0].status).toBe('draft')
+  })
 
-  describe('list', () => {
-    it('should call http.get with correct path', async () => {
-      mockHttp.get.mockResolvedValue([]);
+  it('aliases all to list', async () => {
+    stubFetch({ body: { data: [jsonApiOrder('1')] } })
+    const client = new BooqableClient(clientOptions)
 
-      await proxy.list();
+    const orders = await client.orders.all()
+    expect(orders).toHaveLength(1)
+  })
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        '/api/orders?company_id=company-123',
-        expect.objectContaining({
-          params: expect.objectContaining({
-            page: { size: 25 },
-          }),
-        })
-      );
-    });
+  it('finds a resource by id', async () => {
+    const { requests } = stubFetch({ body: { data: jsonApiOrder('123', { status: 'reserved' }) } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should handle include parameter', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    const order = await client.orders.find('123', { include: 'customer' })
 
-      await proxy.list({ include: 'customer,items' });
+    expect(requests[0].url).toBe('https://demo.booqable.com/api/4/orders/123?include=customer')
+    expect(order.id).toBe('123')
+    expect(order.status).toBe('reserved')
+  })
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            include: 'customer,items',
-          }),
-        })
-      );
-    });
+  it('creates a resource with a JSON:API body', async () => {
+    const { requests } = stubFetch({ status: 201, body: { data: jsonApiOrder('9') } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should handle include as array', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    const order = await client.orders.create({ starts_at: '2024-01-01T00:00:00Z' })
 
-      await proxy.list({ include: ['customer', 'items'] });
+    expect(requests[0].method).toBe('POST')
+    expect(requests[0].url).toBe('https://demo.booqable.com/api/4/orders')
+    expect(JSON.parse(requests[0].body!)).toEqual({
+      data: { type: 'orders', attributes: { starts_at: '2024-01-01T00:00:00Z' } },
+    })
+    expect(order.id).toBe('9')
+  })
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            include: 'customer,items',
-          }),
-        })
-      );
-    });
+  it('updates a resource with a JSON:API body', async () => {
+    const { requests } = stubFetch({ body: { data: jsonApiOrder('9', { status: 'reserved' }) } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should handle filter parameter', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    const order = await client.orders.update('9', { status: 'reserved' })
 
-      await proxy.list({ filter: { status: 'reserved' } });
+    expect(requests[0].method).toBe('PUT')
+    expect(requests[0].url).toBe('https://demo.booqable.com/api/4/orders/9')
+    expect(JSON.parse(requests[0].body!)).toEqual({
+      data: { type: 'orders', id: '9', attributes: { status: 'reserved' } },
+    })
+    expect(order.status).toBe('reserved')
+  })
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            filter: { status: 'reserved' },
-          }),
-        })
-      );
-    });
+  it('deletes a resource and returns it', async () => {
+    const { requests } = stubFetch({ body: { data: jsonApiOrder('9') } })
+    const client = new BooqableClient(clientOptions)
 
-    it('should handle sort parameter', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    const order = await client.orders.delete('9')
 
-      await proxy.list({ sort: '-created_at' });
+    expect(requests[0].method).toBe('DELETE')
+    expect(requests[0].url).toBe('https://demo.booqable.com/api/4/orders/9')
+    expect(order.id).toBe('9')
+  })
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            sort: '-created_at',
-          }),
-        })
-      );
-    });
+  it('propagates API errors', async () => {
+    stubFetch({ status: 404, body: { message: 'Record not found' } })
+    const client = new BooqableClient({ ...clientOptions, noRetries: true })
 
-    it('should handle sort as array', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    await expect(client.orders.find('missing')).rejects.toThrow(NotFound)
+  })
 
-      await proxy.list({ sort: ['-created_at', 'name'] });
+  it('resolves aliases to the underlying resource', async () => {
+    const { requests } = stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            sort: '-created_at,name',
-          }),
-        })
-      );
-    });
+    await client.carriers.list()
+    await client.issues.list()
 
-    it('should handle page parameter', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    expect(requests[0].url).toContain('/api/4/app_carriers')
+    expect(requests[1].url).toContain('/api/4/app_issues')
+  })
 
-      await proxy.list({ page: { size: 50, number: 2 } });
+  it('exposes resources through resource()', async () => {
+    stubFetch({ body: { data: [] } })
+    const client = new BooqableClient(clientOptions)
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            page: { size: 50, number: 2 },
-          }),
-        })
-      );
-    });
+    await expect(client.resource('orders').list()).resolves.toEqual([])
+    expect(() => client.resource('nonexistent')).toThrow(/Unknown resource: nonexistent/)
+  })
 
-    it('should use paginateAll when autoPaginate is true', async () => {
-      mockHttp.options.autoPaginate = true;
-      mockHttp.paginateAll.mockResolvedValue([]);
+  it('returns strict resources', async () => {
+    stubFetch({ body: { data: jsonApiOrder('1') } })
+    const client = new BooqableClient(clientOptions)
 
-      await proxy.list();
+    const order = await client.orders.find('1')
+    expect(() => order.not_a_field).toThrow(MissingAttribute)
+  })
 
-      expect(mockHttp.paginateAll).toHaveBeenCalled();
-      expect(mockHttp.get).not.toHaveBeenCalled();
-    });
+  it('returns plain resources when strictAttributes is disabled', async () => {
+    stubFetch({ body: { data: jsonApiOrder('1') } })
+    const client = new BooqableClient({ ...clientOptions, strictAttributes: false })
 
-    it('should handle stats parameter', async () => {
-      mockHttp.get.mockResolvedValue([]);
+    const order = await client.orders.find('1')
+    expect(order.not_a_field).toBeUndefined()
+  })
 
-      await proxy.list({ stats: 'inventory' });
+  it('populates included relationships on find', async () => {
+    stubFetch({
+      body: {
+        data: {
+          ...jsonApiOrder('1'),
+          relationships: { customer: { data: { id: 'c1', type: 'customers' } } },
+        },
+        included: [{ id: 'c1', type: 'customers', attributes: { name: 'Jane' } }],
+      },
+    })
+    const client = new BooqableClient(clientOptions)
 
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: expect.objectContaining({
-            stats: 'inventory',
-          }),
-        })
-      );
-    });
-  });
-
-  describe('find', () => {
-    it('should call http.get with correct path and id', async () => {
-      mockHttp.get.mockResolvedValue({ id: '123' });
-
-      await proxy.find('123');
-
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        '/api/orders/123?company_id=company-123',
-        expect.objectContaining({
-          params: {},
-        })
-      );
-    });
-
-    it('should handle include parameter', async () => {
-      mockHttp.get.mockResolvedValue({ id: '123' });
-
-      await proxy.find('123', { include: 'customer' });
-
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          params: { include: 'customer' },
-        })
-      );
-    });
-  });
-
-  describe('create', () => {
-    it('should call http.post with correct data', async () => {
-      mockHttp.post.mockResolvedValue({ id: 'new-123' });
-
-      await proxy.create({ name: 'Test', status: 'draft' });
-
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        '/api/orders?company_id=company-123',
-        {
-          type: 'orders',
-          attributes: { name: 'Test', status: 'draft' },
-        }
-      );
-    });
-
-    it('should work with empty attributes', async () => {
-      mockHttp.post.mockResolvedValue({ id: 'new-123' });
-
-      await proxy.create();
-
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        '/api/orders?company_id=company-123',
-        {
-          type: 'orders',
-          attributes: {},
-        }
-      );
-    });
-  });
-
-  describe('update', () => {
-    it('should call http.put with correct data', async () => {
-      mockHttp.put.mockResolvedValue({ id: '123' });
-
-      await proxy.update('123', { status: 'reserved' });
-
-      expect(mockHttp.put).toHaveBeenCalledWith(
-        '/api/orders/123?company_id=company-123',
-        {
-          type: 'orders',
-          id: '123',
-          attributes: { status: 'reserved' },
-        }
-      );
-    });
-  });
-
-  describe('delete', () => {
-    it('should call http.delete with correct path', async () => {
-      mockHttp.delete.mockResolvedValue(undefined);
-
-      await proxy.delete('123');
-
-      expect(mockHttp.delete).toHaveBeenCalledWith(
-        '/api/orders/123?company_id=company-123'
-      );
-    });
-  });
-
-  describe('without company_id', () => {
-    beforeEach(() => {
-      proxy = new ResourceProxy(mockHttp as HttpClient, 'orders');
-    });
-
-    it('should not add company_id to path', async () => {
-      mockHttp.get.mockResolvedValue([]);
-
-      await proxy.list();
-
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        '/api/orders',
-        expect.any(Object)
-      );
-    });
-  });
-});
+    const order = await client.orders.find('1', { include: 'customer' })
+    expect(order.customer.name).toBe('Jane')
+  })
+})

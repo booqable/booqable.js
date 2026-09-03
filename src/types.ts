@@ -1,136 +1,111 @@
+/** A stored OAuth token, in the same shape the OAuth token endpoint returns. */
+export interface TokenHash {
+  access_token?: string
+  refresh_token?: string
+  /** Epoch seconds after which the access token is expired. */
+  expires_at?: number | string | Date | null
+  expires_in?: number
+  token_type?: string
+  scope?: string
+  created_at?: number
+  [key: string]: unknown
+}
+
+/** Reads a stored OAuth token hash (may be async, e.g. a database read). */
+export type ReadToken = () => TokenHash | null | undefined | Promise<TokenHash | null | undefined>
+
+/** Persists a refreshed OAuth token hash (may be async). */
+export type WriteToken = (token: TokenHash) => unknown | Promise<unknown>
+
+/**
+ * Wraps the OAuth read + expiry-check + refresh sequence so the host
+ * application can serialize concurrent refreshes (e.g. with an advisory
+ * lock). Must call and await the given function.
+ */
+export type AroundRefreshToken = (refresh: () => Promise<void>) => Promise<void>
+
+/** Supported single-use token signing algorithms. */
+export type SingleUseTokenAlgorithm = 'HS256' | 'RS256' | 'ES256'
+
+/**
+ * Configuration options for {@link BooqableClient}.
+ *
+ * These mirror the booqable.rb configuration keys, camelCased.
+ * Snake_case spellings (e.g. `api_key`) are accepted as aliases.
+ */
 export interface ClientOptions {
-  // Authentication options
-  apiKey?: string;
-  clientId?: string;
-  clientSecret?: string;
-
-  // Single-use token (JWT) authentication
-  singleUseToken?: string;
-  singleUseTokenAlgorithm?: 'HS256' | 'RS256' | 'ES256';
-  singleUseTokenSecret?: string;
-  singleUseTokenPrivateKey?: string;
-  singleUseTokenCompanyId?: string;
-  singleUseTokenUserId?: string;
-  singleUseTokenExpirationPeriod?: number; // in seconds, default 600
-
-  // OAuth token management
-  readToken?: () => Promise<OAuthToken | null> | OAuthToken | null;
-  writeToken?: (token: OAuthToken) => Promise<void> | void;
-
-  // API configuration
-  apiDomain?: string;
-  apiVersion?: number | 'boomerang';
-  apiEndpoint?: string;
-  companyId?: string; // Required for most operations
-
-  // Request configuration
-  perPage?: number;
-  autoPaginate?: boolean;
-  defaultMediaType?: string;
-  userAgent?: string;
-  proxy?: string;
-  timeout?: number;
-
-  // Behavior
-  debug?: boolean;
-  noRetries?: boolean;
-  maxRetries?: number;
+  /** Domain for API requests (default: "booqable.com"). Non-default domains use http. */
+  apiDomain?: string
+  /** Full base URL for API requests, overriding domain/company construction. */
+  apiEndpoint?: string
+  /** API key used for Bearer authentication. */
+  apiKey?: string
+  /** API version, `4` (default) or `"boomerang"`. */
+  apiVersion?: number | string
+  /** Automatically fetch all pages of paginated results. */
+  autoPaginate?: boolean
+  /** OAuth client id. */
+  clientId?: string
+  /** OAuth client secret. */
+  clientSecret?: string
+  /** Company slug used to build the API endpoint (e.g. "demo" for demo.booqable.com). */
+  companyId?: string
+  /** Log requests and responses to the console. */
+  debug?: boolean
+  /** Media type sent in Accept/Content-Type headers (default: JSON:API). */
+  defaultMediaType?: string
+  /** Disable automatic retries of failed requests. */
+  noRetries?: boolean
+  /** Page size for paginated results (default: 25). */
+  perPage?: number | null
+  /** Reads the stored OAuth token hash. */
+  readToken?: ReadToken
+  /** Persists a (refreshed) OAuth token hash. */
+  writeToken?: WriteToken
+  /** OAuth redirect URI for the authorization-code flow. */
+  redirectUri?: string
+  /** Serializes the OAuth read+check+refresh sequence (e.g. advisory lock). */
+  aroundRefreshToken?: AroundRefreshToken
+  /** Single-use token id (JWT `kid`). */
+  singleUseToken?: string
+  /** Single-use token algorithm: HS256, RS256, or ES256. */
+  singleUseTokenAlgorithm?: SingleUseTokenAlgorithm | string
+  /** Company UUID for the single-use token `aud` claim. */
+  singleUseTokenCompanyId?: string
+  /** Single-use token lifetime in seconds (default: 600). */
+  singleUseTokenExpirationPeriod?: number
+  /** PEM (PKCS#8) private key for RS256/ES256 single-use token signing. */
+  singleUseTokenPrivateKey?: string
+  /** Shared secret for HS256 single-use token signing. */
+  singleUseTokenSecret?: string
+  /** User UUID for the single-use token `sub` claim. */
+  singleUseTokenUserId?: string
+  /** User-Agent header value (ignored by browsers). */
+  userAgent?: string
+  /**
+   * Raise {@link MissingAttribute} when reading attributes that are absent
+   * from an API payload (default: true, matching booqable.rb).
+   */
+  strictAttributes?: boolean
 }
 
-export interface OAuthToken {
-  access_token: string;
-  refresh_token?: string;
-  token_type: string;
-  expires_in?: number;
-  expires_at?: number;
-  scope?: string;
+/** A JSON:API document as returned by the Booqable API, after deserialization. */
+export interface JsonApiDocument {
+  data?: any
+  meta?: any
+  links?: any
+  _includes?: any[]
+  [key: string]: any
 }
 
-export interface RequestOptions {
-  params?: Record<string, any>;
-  headers?: Record<string, string>;
-  timeout?: number;
-}
-
-export interface ListOptions extends RequestOptions {
-  include?: string | string[];
-  filter?: Record<string, any>;
-  sort?: string | string[];
-  page?: {
-    size?: number;
-    number?: number;
-  };
-  stats?: string | string[];
-}
-
-export interface FindOptions extends RequestOptions {
-  include?: string | string[];
-}
-
-export interface PaginationInfo {
-  current_page: number;
-  per_page: number;
-  total_pages?: number;
-  total_count?: number;
-}
-
-export interface RateLimit {
-  limit: number;
-  remaining: number;
-  period: number; // in seconds
-  resetsAt: Date;
-  resetsIn: number; // seconds until reset
-}
-
-export interface ApiResponse<T = any> {
-  data: T;
-  meta?: {
-    total_count?: number;
-    [key: string]: any;
-  };
-  links?: {
-    self?: string;
-    first?: string;
-    prev?: string;
-    next?: string;
-    last?: string;
-  };
-  included?: any[];
-}
-
-export interface JsonApiResource {
-  id: string;
-  type: string;
-  attributes?: Record<string, any>;
-  relationships?: Record<string, JsonApiRelationship>;
-  meta?: Record<string, any>;
-}
-
-export interface JsonApiRelationship {
-  data?: JsonApiResourceIdentifier | JsonApiResourceIdentifier[] | null;
-  links?: {
-    self?: string;
-    related?: string;
-  };
-  meta?: Record<string, any>;
-}
-
-export interface JsonApiResourceIdentifier {
-  id: string;
-  type: string;
-  meta?: Record<string, any>;
-}
-
-export interface ErrorResponse {
-  errors: Array<{
-    status?: string;
-    code?: string;
-    title?: string;
-    detail?: string;
-    source?: {
-      pointer?: string;
-      parameter?: string;
-    };
-    meta?: Record<string, any>;
-  }>;
+/** The response of the last request made by a client. */
+export interface LastResponse {
+  status: number
+  headers: Headers
+  /** Deserialized response body. */
+  data: any
+  /** Raw response body text. */
+  body: string
+  url: string
+  method: string
 }

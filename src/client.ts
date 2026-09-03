@@ -1,218 +1,224 @@
-import { ClientOptions, RateLimit, OAuthToken } from './types';
-import { HttpClient } from './http-client';
-import { ResourceProxy } from './resource-proxy';
-import resources from './resources.json';
+import { ClientOptions, LastResponse, TokenHash } from './types.js'
+import { defaultOptions, normalizeOptions } from './options.js'
+import { HttpClient } from './http.js'
+import { ResourceProxy } from './resource-proxy.js'
+import { RateLimit } from './rate-limit.js'
+import { OAuthAuth } from './auth/oauth.js'
+import { OAuthClient } from './oauth-client.js'
+import { parseResource } from './resource-parser.js'
+import { resourceMethods } from './resources.js'
 
-const DEFAULT_OPTIONS: Partial<ClientOptions> = {
-  apiDomain: 'booqable.com',
-  apiVersion: 4,
-  perPage: 25,
-  autoPaginate: false,
-  defaultMediaType: 'application/vnd.api+json',
-  userAgent: 'Booqable Node.js Client/1.0.0',
-  timeout: 30000,
-  debug: false,
-  noRetries: false,
-  maxRetries: 2,
-  singleUseTokenExpirationPeriod: 600,
-};
-
+/**
+ * Client for the Booqable API.
+ *
+ * Provides a JavaScript interface to interact with the Booqable rental
+ * management API. The client can be configured with various authentication
+ * methods including API keys, OAuth, and single-use tokens.
+ *
+ * @example Initialize with API key
+ *   const client = new BooqableClient({
+ *     apiKey: 'your_api_key',
+ *     companyId: 'your_company_id',
+ *   })
+ *
+ *   const orders = await client.orders.list({ include: 'customer' })
+ *
+ * @see https://developers.booqable.com/
+ */
 export class BooqableClient {
-  private http: HttpClient;
-  private options: ClientOptions;
-  private resourceProxies: Map<string, ResourceProxy> = new Map();
+  readonly options: ClientOptions
+  readonly http: HttpClient
 
-  constructor(options: ClientOptions = {}) {
-    this.options = this.buildOptions(options);
-    this.http = new HttpClient(this.options);
-    this.loadResources();
-  }
+  constructor(options: Record<string, any> = {}) {
+    // Use options passed in, but fall back to defaults (including env vars).
+    this.options = { ...defaultOptions(), ...normalizeOptions(options) }
+    this.http = new HttpClient(this.options)
 
-  private buildOptions(options: ClientOptions): ClientOptions {
-    const merged = { ...DEFAULT_OPTIONS, ...options };
-
-    // Build API endpoint if not provided
-    if (!merged.apiEndpoint) {
-      const version = merged.apiVersion === 'boomerang' ? 'boomerang' : `v${merged.apiVersion}`;
-      merged.apiEndpoint = `https://${merged.apiDomain}/${version}`;
-    }
-
-    // Load from environment variables if not provided
-    merged.apiKey = merged.apiKey || process.env.BOOQABLE_API_KEY;
-    merged.companyId = merged.companyId || process.env.BOOQABLE_COMPANY_ID;
-    merged.clientId = merged.clientId || process.env.BOOQABLE_CLIENT_ID;
-    merged.clientSecret = merged.clientSecret || process.env.BOOQABLE_CLIENT_SECRET;
-
-    return merged as ClientOptions;
-  }
-
-  private loadResources(): void {
-    for (const resource of resources) {
-      if (typeof resource === 'string') {
-        // Simple resource name
-        this.defineResource(resource, resource);
-      } else {
-        // Resource with alias { "app_carriers": "carriers" }
-        const [key, alias] = Object.entries(resource)[0];
-        this.defineResource(key, alias);
-
-        // Also create the alias as a separate resource
-        if (alias !== key) {
-          this.defineResource(alias, alias);
-        }
-      }
+    for (const [methodName, resourceName] of resourceMethods()) {
+      Object.defineProperty(this, methodName, {
+        get: () => new ResourceProxy(this.http, resourceName),
+        enumerable: false,
+        configurable: true,
+      })
     }
   }
 
-  private defineResource(name: string, resourceType: string): void {
-    const proxy = new ResourceProxy(this.http, resourceType, this.options.companyId);
-    this.resourceProxies.set(name, proxy);
-
-    // Define getter on the client instance
-    Object.defineProperty(this, name, {
-      get: () => proxy,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-
-  /**
-   * Get a resource proxy by name
-   */
+  /** Access a resource proxy by name (e.g. `client.resource('orders')`). */
   resource(name: string): ResourceProxy {
-    const proxy = this.resourceProxies.get(name);
-    if (!proxy) {
-      throw new Error(`Unknown resource: ${name}`);
-    }
-    return proxy;
+    const match = resourceMethods().find(([methodName]) => methodName === name)
+    if (!match) throw new Error(`Unknown resource: ${name}`)
+    return new ResourceProxy(this.http, match[1])
   }
 
-  /**
-   * Get current rate limit information
-   */
+  /** Make an HTTP GET request. Options become query params. */
+  async get(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.get(path, data)
+  }
+
+  /** Make an HTTP HEAD request. */
+  async head(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.head(path, data)
+  }
+
+  /** Make an HTTP POST request. */
+  async post(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.post(path, data)
+  }
+
+  /** Make an HTTP PUT request. */
+  async put(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.put(path, data)
+  }
+
+  /** Make an HTTP PATCH request. */
+  async patch(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.patch(path, data)
+  }
+
+  /** Make an HTTP DELETE request. */
+  async delete(path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.delete(path, data)
+  }
+
+  /** Make a custom HTTP request to the Booqable API. */
+  async request(method: string, path: string, data: Record<string, any> = {}): Promise<any> {
+    return this.http.request(method, path, data)
+  }
+
+  /** Make a paginated GET request; returns the concatenated records. */
+  async paginate(path: string, params: Record<string, any> = {}): Promise<any[]> {
+    return this.http.paginate(path, params)
+  }
+
+  /** Rate limit information from the last response. */
   rateLimit(): RateLimit {
-    return this.http.getRateLimit();
+    return this.http.rateLimit()
+  }
+
+  /** The last HTTP response, or null if no request was made (or it failed). */
+  get lastResponse(): LastResponse | null {
+    return this.http.lastResponse
   }
 
   /**
-   * Get the last response from the API
+   * Completes the OAuth authorization-code flow: exchanges the code for an
+   * access token and persists it via the configured `writeToken`.
    */
-  get lastResponse() {
-    return this.http.lastResponse;
+  async authenticateWithCode(code: string): Promise<TokenHash> {
+    const token = await this.oauthClient().getTokenFromCode(code)
+    await this.options.writeToken?.(token)
+    return token
   }
 
   /**
-   * Authenticate with OAuth authorization code
+   * Parses a JSON:API payload (e.g. a webhook payload) into an object with
+   * flattened attributes and populated relationships.
    */
-  async authenticateWithCode(code: string, redirectUri: string): Promise<OAuthToken> {
-    const oauthClient = this.http.getOAuthClient();
-    if (!oauthClient) {
-      throw new Error('OAuth client not configured. Provide clientId and clientSecret.');
-    }
-    return await oauthClient.authenticateWithCode(code, redirectUri);
+  parseResource(payload: string | Record<string, any> | null | undefined): any {
+    return parseResource(payload, { strict: this.options.strictAttributes !== false })
   }
 
-  /**
-   * Get current OAuth token
-   */
-  getOAuthToken(): OAuthToken | null {
-    const oauthClient = this.http.getOAuthClient();
-    return oauthClient ? oauthClient.getToken() : null;
+  /** Alias for {@link parseResource}. */
+  deserializeResource(payload: string | Record<string, any> | null | undefined): any {
+    return this.parseResource(payload)
   }
 
-  /**
-   * Create a new client with different options
-   */
-  static create(options: ClientOptions = {}): BooqableClient {
-    return new BooqableClient(options);
-  }
+  /** The OAuth client, when OAuth credentials are configured. */
+  oauthClient(): OAuthClient {
+    const auth = this.http.auth()
+    if (auth instanceof OAuthAuth) return auth.client
 
-  /**
-   * Configure the default client instance
-   */
-  static configure(options: ClientOptions): BooqableClient {
-    return new BooqableClient(options);
+    return new OAuthClient({
+      apiEndpoint: this.http.apiEndpoint,
+      clientId: requireOption(this.options.clientId, 'clientId'),
+      clientSecret: requireOption(this.options.clientSecret, 'clientSecret'),
+      redirectUri: this.options.redirectUri,
+    })
   }
 }
 
-// Add resource method declarations to the class for TypeScript
-export interface BooqableClient {
-  // Resources with aliases
-  app_carriers: ResourceProxy;
-  carriers: ResourceProxy;
-  app_subscriptions: ResourceProxy;
-  subscriptions: ResourceProxy;
-  app_payment_options: ResourceProxy;
-  payment_options: ResourceProxy;
+function requireOption(value: string | undefined, name: string): string {
+  if (!value) throw new Error(`OAuth is not configured. Provide \`${name}\` in Booqable configuration.`)
+  return value
+}
 
-  // Standard resources
-  authentication_methods: ResourceProxy;
-  barcodes: ResourceProxy;
-  bundles: ResourceProxy;
-  bundle_items: ResourceProxy;
-  clusters: ResourceProxy;
-  collections: ResourceProxy;
-  collection_items: ResourceProxy;
-  collection_trees: ResourceProxy;
-  companies: ResourceProxy;
-  countries: ResourceProxy;
-  coupons: ResourceProxy;
-  customers: ResourceProxy;
-  default_properties: ResourceProxy;
-  delivery_distance_calculations: ResourceProxy;
-  deposit_holds: ResourceProxy;
-  documents: ResourceProxy;
-  emails: ResourceProxy;
-  email_templates: ResourceProxy;
-  employees: ResourceProxy;
-  employee_invitations: ResourceProxy;
-  inventory_breakdowns: ResourceProxy;
-  inventory_levels: ResourceProxy;
-  invoice_finalizations: ResourceProxy;
-  invoice_revisions: ResourceProxy;
-  item_prices: ResourceProxy;
-  items: ResourceProxy;
-  lines: ResourceProxy;
-  line_charge_suggestions: ResourceProxy;
-  locations: ResourceProxy;
-  notes: ResourceProxy;
-  orders: ResourceProxy;
-  order_delivery_rate_recalculations: ResourceProxy;
-  order_delivery_rates: ResourceProxy;
-  order_fulfillments: ResourceProxy;
-  order_price_recalculations: ResourceProxy;
-  order_status_transitions: ResourceProxy;
-  payments: ResourceProxy;
-  payment_authorizations: ResourceProxy;
-  payment_charges: ResourceProxy;
-  payment_methods: ResourceProxy;
-  payment_refunds: ResourceProxy;
-  photos: ResourceProxy;
-  plannings: ResourceProxy;
-  price_rules: ResourceProxy;
-  price_rulesets: ResourceProxy;
-  price_structures: ResourceProxy;
-  price_tiles: ResourceProxy;
-  products: ResourceProxy;
-  product_groups: ResourceProxy;
-  properties: ResourceProxy;
-  provinces: ResourceProxy;
-  settings: ResourceProxy;
-  signatures: ResourceProxy;
-  sortings: ResourceProxy;
-  stock_adjustments: ResourceProxy;
-  stock_items: ResourceProxy;
-  stock_item_archivations: ResourceProxy;
-  stock_item_plannings: ResourceProxy;
-  stock_item_suggestions: ResourceProxy;
-  tags: ResourceProxy;
-  tax_categories: ResourceProxy;
-  tax_rates: ResourceProxy;
-  tax_regions: ResourceProxy;
-  tax_values: ResourceProxy;
-  transfers: ResourceProxy;
-  user_invitations: ResourceProxy;
-  users: ResourceProxy;
-  webhook_endpoints: ResourceProxy;
-  webhooks: ResourceProxy;
+/** Resource accessors, one per entry in resources.json (plus aliases). */
+export interface BooqableClient {
+  readonly app_carriers: ResourceProxy
+  readonly carriers: ResourceProxy
+  readonly app_subscriptions: ResourceProxy
+  readonly subscriptions: ResourceProxy
+  readonly app_payment_options: ResourceProxy
+  readonly payment_options: ResourceProxy
+  readonly app_issues: ResourceProxy
+  readonly issues: ResourceProxy
+  readonly authentication_methods: ResourceProxy
+  readonly barcodes: ResourceProxy
+  readonly bundles: ResourceProxy
+  readonly bundle_items: ResourceProxy
+  readonly clusters: ResourceProxy
+  readonly collections: ResourceProxy
+  readonly collection_items: ResourceProxy
+  readonly collection_trees: ResourceProxy
+  readonly companies: ResourceProxy
+  readonly countries: ResourceProxy
+  readonly coupons: ResourceProxy
+  readonly customers: ResourceProxy
+  readonly default_properties: ResourceProxy
+  readonly delivery_distance_calculations: ResourceProxy
+  readonly deposit_holds: ResourceProxy
+  readonly documents: ResourceProxy
+  readonly emails: ResourceProxy
+  readonly email_templates: ResourceProxy
+  readonly employees: ResourceProxy
+  readonly employee_invitations: ResourceProxy
+  readonly inventory_breakdowns: ResourceProxy
+  readonly inventory_levels: ResourceProxy
+  readonly invoice_finalizations: ResourceProxy
+  readonly invoice_revisions: ResourceProxy
+  readonly item_prices: ResourceProxy
+  readonly items: ResourceProxy
+  readonly lines: ResourceProxy
+  readonly line_charge_suggestions: ResourceProxy
+  readonly locations: ResourceProxy
+  readonly notes: ResourceProxy
+  readonly orders: ResourceProxy
+  readonly order_delivery_rate_recalculations: ResourceProxy
+  readonly order_delivery_rates: ResourceProxy
+  readonly order_fulfillments: ResourceProxy
+  readonly order_price_recalculations: ResourceProxy
+  readonly order_status_transitions: ResourceProxy
+  readonly payments: ResourceProxy
+  readonly payment_authorizations: ResourceProxy
+  readonly payment_charges: ResourceProxy
+  readonly payment_methods: ResourceProxy
+  readonly payment_refunds: ResourceProxy
+  readonly photos: ResourceProxy
+  readonly plannings: ResourceProxy
+  readonly price_rules: ResourceProxy
+  readonly price_rulesets: ResourceProxy
+  readonly price_structures: ResourceProxy
+  readonly price_tiles: ResourceProxy
+  readonly products: ResourceProxy
+  readonly product_groups: ResourceProxy
+  readonly properties: ResourceProxy
+  readonly provinces: ResourceProxy
+  readonly settings: ResourceProxy
+  readonly signatures: ResourceProxy
+  readonly sortings: ResourceProxy
+  readonly stock_adjustments: ResourceProxy
+  readonly stock_items: ResourceProxy
+  readonly stock_item_archivations: ResourceProxy
+  readonly stock_item_plannings: ResourceProxy
+  readonly stock_item_suggestions: ResourceProxy
+  readonly tags: ResourceProxy
+  readonly tax_categories: ResourceProxy
+  readonly tax_rates: ResourceProxy
+  readonly tax_regions: ResourceProxy
+  readonly tax_values: ResourceProxy
+  readonly transfers: ResourceProxy
+  readonly user_invitations: ResourceProxy
+  readonly users: ResourceProxy
+  readonly webhook_endpoints: ResourceProxy
+  readonly webhooks: ResourceProxy
 }

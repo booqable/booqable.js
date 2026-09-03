@@ -1,190 +1,174 @@
-import { JsonApiResource, JsonApiResourceIdentifier, ApiResponse } from './types';
+/**
+ * JSON:API serializer.
+ *
+ * Handles encoding and decoding of JSON:API documents with automatic
+ * relationship population and attribute flattening, mirroring
+ * Booqable::JsonApiSerializer from booqable.rb:
+ *
+ * - `attributes` are merged into the resource object itself
+ * - relationships with a `data` member are lifted to direct keys, pointing
+ *   at the matching `included` resource when present (recursively), or at
+ *   the bare `{ id, type }` reference otherwise
+ * - an explicitly null to-one relationship (`"data": null`) keeps its key
+ *   with a null value, so strict reads answer null instead of throwing
+ * - the top-level `included` array is renamed to `_includes`
+ * - values of keys ending in `_at`/`_on`/`date` are parsed into Date objects
+ */
+
+const TIME_KEY_PATTERN = /(_(at|on)$)|((^|_)date$)/
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)
+}
+
+function isTimeField(key: string, value: unknown): boolean {
+  return value != null && TIME_KEY_PATTERN.test(key)
+}
+
+function encodeValue(value: any): any {
+  if (value instanceof Date) return value.toISOString()
+  if (Array.isArray(value)) return value.map(encodeValue)
+  if (isPlainObject(value)) {
+    const result: Record<string, any> = {}
+    for (const [key, entry] of Object.entries(value)) {
+      result[key] = encodeValue(entry)
+    }
+    return result
+  }
+  return value
+}
+
+/**
+ * Replaces `{ id, type }` relationship references with the matching resource
+ * from the `included` array, recursively populating nested relationships.
+ * A seen-set guards against reference cycles between included resources.
+ */
+function populateRelationships(obj: any, includes: any[], seen: Set<any>): void {
+  if (Array.isArray(obj)) {
+    for (const item of obj) populateRelationships(item, includes, seen)
+    return
+  }
+
+  if (!isPlainObject(obj) || seen.has(obj)) return
+  seen.add(obj)
+
+  const relationships = obj.relationships
+  if (!isPlainObject(relationships)) return
+
+  const findInclude = (ref: any) =>
+    includes.find((inc) => inc && inc.id === ref.id && inc.type === ref.type)
+
+  for (const value of Object.values(relationships)) {
+    if (!isPlainObject(value) || !('data' in value)) continue
+
+    const data = (value as any).data
+
+    if (isPlainObject(data) && 'id' in data && 'type' in data) {
+      const found = findInclude(data)
+      if (found) {
+        ;(value as any).data = found
+        populateRelationships(found, includes, seen)
+      }
+    } else if (Array.isArray(data)) {
+      ;(value as any).data = data.map((ref) => {
+        if (isPlainObject(ref) && 'id' in ref && 'type' in ref) {
+          const found = findInclude(ref)
+          if (found) {
+            populateRelationships(found, includes, seen)
+            return found
+          }
+        }
+        return ref
+      })
+    }
+  }
+}
+
+function decodeHash(hash: Record<string, any>, cache: WeakMap<object, any>): Record<string, any> {
+  const cached = cache.get(hash)
+  if (cached) return cached
+
+  const result: Record<string, any> = {}
+  cache.set(hash, result)
+
+  const working: Record<string, any> = { ...hash }
+
+  // A document may carry its own `included` array (top-level or nested).
+  if ('included' in working) {
+    populateRelationships(working.data, working.included || [], new Set())
+    working._includes = working.included
+    delete working.included
+  }
+
+  // Flatten JSON:API `attributes` into the resource itself.
+  if (isPlainObject(working.attributes)) {
+    const attributes = working.attributes
+    delete working.attributes
+    Object.assign(working, attributes)
+  }
+
+  // Lift relationships with a `data` member to direct keys.
+  if (isPlainObject(working.relationships)) {
+    const relationships = working.relationships
+    delete working.relationships
+
+    for (const [key, value] of Object.entries(relationships)) {
+      if (!isPlainObject(value) || !('data' in value)) continue
+
+      const data = (value as any).data
+      if (isPlainObject(data) || Array.isArray(data) || data === null) {
+        // An explicitly null to-one relationship is present-with-null, not
+        // absent: keep the key so strict reads answer null instead of
+        // throwing MissingAttribute.
+        working[key] = data
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(working)) {
+    result[key] = decodeValue(key, value, cache)
+  }
+
+  return result
+}
+
+function decodeValue(key: string, value: any, cache: WeakMap<object, any>): any {
+  if (isTimeField(key, value)) {
+    if (typeof value === 'string') {
+      const parsed = new Date(value)
+      return isNaN(parsed.getTime()) ? value : parsed
+    }
+    if (typeof value === 'number') {
+      return new Date(value * 1000)
+    }
+  }
+
+  if (Array.isArray(value)) return value.map((item) => decodeValue(key, item, cache))
+  if (isPlainObject(value)) return decodeHash(value, cache)
+  return value
+}
 
 export class JsonApiSerializer {
   /**
-   * Deserialize JSON:API response to plain objects with populated relationships
+   * Encodes an object (usually a request body) to a JSON string,
+   * converting Date instances to ISO 8601 strings.
    */
-  static deserialize(response: ApiResponse): any {
-    if (!response.data) {
-      return null;
-    }
-
-    const included = response.included || [];
-    const includedMap = this.buildIncludedMap(included);
-
-    if (Array.isArray(response.data)) {
-      return response.data.map(resource => this.deserializeResource(resource, includedMap));
-    }
-
-    return this.deserializeResource(response.data, includedMap);
+  static encode(data: any): string {
+    return JSON.stringify(encodeValue(data))
   }
 
   /**
-   * Serialize plain object to JSON:API format
+   * Decodes a JSON:API string into plain objects with populated
+   * relationships, flattened attributes, and parsed dates.
+   * Returns null for nil or empty input.
    */
-  static serialize(type: string, data: Record<string, any>, id?: string): JsonApiResource {
-    const resource: JsonApiResource = {
-      type,
-      id: id || data.id,
-      attributes: {},
-      relationships: {},
-    };
+  static decode(data: string | null | undefined): any {
+    if (data == null || data.trim() === '') return null
 
-    for (const [key, value] of Object.entries(data)) {
-      if (key === 'id' || key === 'type') {
-        continue;
-      }
-
-      if (this.isRelationship(value)) {
-        resource.relationships![key] = this.serializeRelationship(value);
-      } else {
-        resource.attributes![key] = this.transformValue(value);
-      }
-    }
-
-    if (Object.keys(resource.relationships!).length === 0) {
-      delete resource.relationships;
-    }
-
-    return resource;
-  }
-
-  private static deserializeResource(
-    resource: JsonApiResource,
-    includedMap: Map<string, JsonApiResource>
-  ): any {
-    const result: any = {
-      id: resource.id,
-      type: resource.type,
-      ...resource.attributes,
-    };
-
-    // Add meta if present
-    if (resource.meta) {
-      result.meta = resource.meta;
-    }
-
-    // Populate relationships
-    if (resource.relationships) {
-      for (const [key, relationship] of Object.entries(resource.relationships)) {
-        if (!relationship.data) {
-          result[key] = null;
-          continue;
-        }
-
-        if (Array.isArray(relationship.data)) {
-          result[key] = relationship.data.map(ref => {
-            const included = includedMap.get(this.makeKey(ref.type, ref.id));
-            return included
-              ? this.deserializeResource(included, includedMap)
-              : { id: ref.id, type: ref.type };
-          });
-        } else {
-          const ref = relationship.data as JsonApiResourceIdentifier;
-          const included = includedMap.get(this.makeKey(ref.type, ref.id));
-          result[key] = included
-            ? this.deserializeResource(included, includedMap)
-            : { id: ref.id, type: ref.type };
-        }
-      }
-    }
-
-    return result;
-  }
-
-  private static buildIncludedMap(included: JsonApiResource[]): Map<string, JsonApiResource> {
-    const map = new Map<string, JsonApiResource>();
-    for (const resource of included) {
-      map.set(this.makeKey(resource.type, resource.id), resource);
-    }
-    return map;
-  }
-
-  private static makeKey(type: string, id: string): string {
-    return `${type}:${id}`;
-  }
-
-  private static isRelationship(value: any): boolean {
-    if (!value || typeof value !== 'object') {
-      return false;
-    }
-
-    // Check if it looks like a relationship (has id and type)
-    if (value.id && value.type) {
-      return true;
-    }
-
-    // Check if it's an array of relationships
-    if (Array.isArray(value) && value.length > 0 && value[0].id && value[0].type) {
-      return true;
-    }
-
-    return false;
-  }
-
-  private static serializeRelationship(value: any): any {
-    if (Array.isArray(value)) {
-      return {
-        data: value.map(item => ({
-          id: item.id,
-          type: item.type,
-        })),
-      };
-    }
-
-    return {
-      data: value ? { id: value.id, type: value.type } : null,
-    };
-  }
-
-  private static transformValue(value: any): any {
-    if (value instanceof Date) {
-      return value.toISOString();
-    }
-
-    if (Array.isArray(value)) {
-      return value.map(v => this.transformValue(v));
-    }
-
-    if (value && typeof value === 'object' && !(value instanceof Date)) {
-      const transformed: any = {};
-      for (const [k, v] of Object.entries(value)) {
-        transformed[k] = this.transformValue(v);
-      }
-      return transformed;
-    }
-
-    return value;
-  }
-
-  /**
-   * Parse dates in response data
-   */
-  static parseDates(data: any): any {
-    if (!data || typeof data !== 'object') {
-      return data;
-    }
-
-    if (Array.isArray(data)) {
-      return data.map(item => this.parseDates(item));
-    }
-
-    const result: any = {};
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof value === 'string' && this.isIsoDateString(value)) {
-        result[key] = new Date(value);
-      } else if (value && typeof value === 'object') {
-        result[key] = this.parseDates(value);
-      } else {
-        result[key] = value;
-      }
-    }
-
-    return result;
-  }
-
-  private static isIsoDateString(value: string): boolean {
-    // Check for ISO 8601 date format
-    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/.test(value);
+    const parsed = JSON.parse(data)
+    const cache = new WeakMap<object, any>()
+    if (Array.isArray(parsed)) return parsed.map((item) => (isPlainObject(item) ? decodeHash(item, cache) : item))
+    if (isPlainObject(parsed)) return decodeHash(parsed, cache)
+    return parsed
   }
 }

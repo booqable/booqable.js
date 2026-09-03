@@ -25,6 +25,9 @@ export default [
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // TypeScript itself checks undefined identifiers (including ambient
+      // types like BufferSource); core no-undef false-positives on them.
+      'no-undef': 'off',
       '@typescript-eslint/no-unsafe-declaration-merging': 'off',
       'no-redeclare': 'off',
       '@typescript-eslint/no-redeclare': 'off',

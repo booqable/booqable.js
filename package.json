@@ -1,15 +1,27 @@
 {
   "name": "@booqable/client",
-  "version": "1.0.0",
-  "description": "Official TypeScript/Node.js client library for the Booqable API",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "version": "2.1.0",
+  "description": "JavaScript/TypeScript toolkit for the Booqable API. Zero-dependency port of the booqable.rb gem — works in Node.js, browsers, and edge runtimes such as Cloudflare Workers.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
-    "build": "tsc",
-    "test": "vitest",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
     "test:watch": "vitest --watch",
-    "test:coverage": "vitest --coverage",
-    "lint": "eslint src",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src test",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -22,14 +34,8 @@
   ],
   "author": "Booqable",
   "license": "MIT",
-  "dependencies": {
-    "axios": "^1.19.0",
-    "axios-retry": "^4.5.0",
-    "jsonwebtoken": "^9.0.3"
-  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^26.1.2",
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",

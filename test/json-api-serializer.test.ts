@@ -1,307 +1,226 @@
-import { describe, it, expect } from 'vitest';
-import { JsonApiSerializer } from '../src/json-api-serializer';
-import { ApiResponse } from '../src/types';
+import { describe, expect, it } from 'vitest'
+import { JsonApiSerializer } from '../src/json-api-serializer.js'
 
 describe('JsonApiSerializer', () => {
-  describe('deserialize', () => {
-    it('should deserialize a single resource', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: {
-            number: 12345,
-            status: 'reserved',
-          },
-        },
-      };
+  describe('decode', () => {
+    it('returns null for nil or empty input', () => {
+      expect(JsonApiSerializer.decode(null)).toBeNull()
+      expect(JsonApiSerializer.decode(undefined)).toBeNull()
+      expect(JsonApiSerializer.decode('')).toBeNull()
+      expect(JsonApiSerializer.decode('   ')).toBeNull()
+    })
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result).toEqual({
-        id: '1',
-        type: 'orders',
-        number: 12345,
-        status: 'reserved',
-      });
-    });
+    it('flattens attributes into the resource', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: { id: '1', type: 'orders', attributes: { status: 'draft', number: 42 } },
+        })
+      )
 
-    it('should deserialize an array of resources', () => {
-      const response: ApiResponse = {
-        data: [
-          {
+      expect(decoded.data.id).toBe('1')
+      expect(decoded.data.type).toBe('orders')
+      expect(decoded.data.status).toBe('draft')
+      expect(decoded.data.number).toBe(42)
+      expect(decoded.data.attributes).toBeUndefined()
+    })
+
+    it('parses date-like attributes into Date objects', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
             id: '1',
             type: 'orders',
-            attributes: { number: 1 },
-          },
-          {
-            id: '2',
-            type: 'orders',
-            attributes: { number: 2 },
-          },
-        ],
-      };
-
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result).toHaveLength(2);
-      expect(result[0].id).toBe('1');
-      expect(result[1].id).toBe('2');
-    });
-
-    it('should return null for empty data', () => {
-      const response: ApiResponse = { data: null as any };
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result).toBeNull();
-    });
-
-    it('should populate to-one relationships', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: { number: 1 },
-          relationships: {
-            customer: {
-              data: { id: '100', type: 'customers' },
-            },
-          },
-        },
-        included: [
-          {
-            id: '100',
-            type: 'customers',
             attributes: {
-              name: 'John Doe',
-              email: 'john@example.com',
+              created_at: '2024-01-15T10:30:00Z',
+              starts_on: '2024-02-01',
+              date: '2024-03-01',
+              epoch_at: 1700000000,
+              name_with_at_inside: 'kept',
+              invalid_at: 'not a date',
             },
           },
-        ],
-      };
+        })
+      )
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result.customer).toBeDefined();
-      expect(result.customer.id).toBe('100');
-      expect(result.customer.name).toBe('John Doe');
-      expect(result.customer.email).toBe('john@example.com');
-    });
+      expect(decoded.data.created_at).toBeInstanceOf(Date)
+      expect(decoded.data.created_at.toISOString()).toBe('2024-01-15T10:30:00.000Z')
+      expect(decoded.data.starts_on).toBeInstanceOf(Date)
+      expect(decoded.data.date).toBeInstanceOf(Date)
+      expect(decoded.data.epoch_at).toBeInstanceOf(Date)
+      expect(decoded.data.epoch_at.getTime()).toBe(1700000000 * 1000)
+      expect(decoded.data.name_with_at_inside).toBe('kept')
+      expect(decoded.data.invalid_at).toBe('not a date')
+    })
 
-    it('should populate to-many relationships', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: { number: 1 },
-          relationships: {
-            items: {
-              data: [
-                { id: '10', type: 'items' },
-                { id: '11', type: 'items' },
-              ],
+    it('populates to-one relationships from included resources', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            attributes: { status: 'reserved' },
+            relationships: {
+              customer: { data: { id: 'cust-1', type: 'customers' } },
             },
           },
-        },
-        included: [
-          {
-            id: '10',
-            type: 'items',
-            attributes: { quantity: 1 },
-          },
-          {
-            id: '11',
-            type: 'items',
-            attributes: { quantity: 2 },
-          },
-        ],
-      };
+          included: [{ id: 'cust-1', type: 'customers', attributes: { name: 'Jane' } }],
+        })
+      )
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result.items).toHaveLength(2);
-      expect(result.items[0].quantity).toBe(1);
-      expect(result.items[1].quantity).toBe(2);
-    });
+      expect(decoded.data.customer.id).toBe('cust-1')
+      expect(decoded.data.customer.name).toBe('Jane')
+      expect(decoded.data.relationships).toBeUndefined()
+      expect(decoded._includes).toHaveLength(1)
+      expect(decoded.included).toBeUndefined()
+    })
 
-    it('should handle null relationships', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: { number: 1 },
-          relationships: {
-            customer: {
-              data: null,
+    it('keeps bare references when the include is missing', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: { customer: { data: { id: 'cust-9', type: 'customers' } } },
+          },
+        })
+      )
+
+      expect(decoded.data.customer).toEqual({ id: 'cust-9', type: 'customers' })
+    })
+
+    it('populates to-many relationships from included resources', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: {
+              lines: {
+                data: [
+                  { id: 'line-1', type: 'lines' },
+                  { id: 'line-2', type: 'lines' },
+                ],
+              },
             },
           },
-        },
-      };
+          included: [{ id: 'line-1', type: 'lines', attributes: { title: 'Camera' } }],
+        })
+      )
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result.customer).toBeNull();
-    });
+      expect(decoded.data.lines).toHaveLength(2)
+      expect(decoded.data.lines[0].title).toBe('Camera')
+      expect(decoded.data.lines[1]).toEqual({ id: 'line-2', type: 'lines' })
+    })
 
-    it('should include relationship ids when not in included', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: { number: 1 },
-          relationships: {
-            customer: {
-              data: { id: '100', type: 'customers' },
-            },
+    it('keeps explicitly null to-one relationships as present-with-null', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: { customer: { data: null } },
           },
-        },
-        included: [],
-      };
+        })
+      )
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result.customer).toEqual({ id: '100', type: 'customers' });
-    });
+      expect('customer' in decoded.data).toBe(true)
+      expect(decoded.data.customer).toBeNull()
+    })
 
-    it('should include meta if present', () => {
-      const response: ApiResponse = {
-        data: {
-          id: '1',
-          type: 'orders',
-          attributes: { number: 1 },
-          meta: { some: 'metadata' },
-        },
-      };
+    it('drops relationships that only carry links', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: { customer: { links: { related: '/customers/1' } } },
+          },
+        })
+      )
 
-      const result = JsonApiSerializer.deserialize(response);
-      expect(result.meta).toEqual({ some: 'metadata' });
-    });
-  });
+      expect('customer' in decoded.data).toBe(false)
+    })
 
-  describe('serialize', () => {
-    it('should serialize a resource', () => {
-      const data = {
-        id: '1',
-        name: 'Product',
-        price: 100,
-      };
+    it('populates nested relationships recursively', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: { customer: { data: { id: 'cust-1', type: 'customers' } } },
+          },
+          included: [
+            {
+              id: 'cust-1',
+              type: 'customers',
+              attributes: { name: 'Jane' },
+              relationships: { properties: { data: [{ id: 'prop-1', type: 'properties' }] } },
+            },
+            { id: 'prop-1', type: 'properties', attributes: { value: 'VIP' } },
+          ],
+        })
+      )
 
-      const result = JsonApiSerializer.serialize('products', data);
-      expect(result.type).toBe('products');
-      expect(result.id).toBe('1');
-      expect(result.attributes).toEqual({
-        name: 'Product',
-        price: 100,
-      });
-    });
+      expect(decoded.data.customer.properties[0].value).toBe('VIP')
+    })
 
-    it('should handle relationships', () => {
-      const data = {
-        id: '1',
-        name: 'Order',
-        customer: { id: '100', type: 'customers' },
-      };
+    it('survives circular includes', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: {
+            id: 'order-1',
+            type: 'orders',
+            relationships: { customer: { data: { id: 'cust-1', type: 'customers' } } },
+          },
+          included: [
+            {
+              id: 'cust-1',
+              type: 'customers',
+              attributes: { name: 'Jane' },
+              relationships: { orders: { data: [{ id: 'order-2', type: 'orders' }] } },
+            },
+            {
+              id: 'order-2',
+              type: 'orders',
+              relationships: { customer: { data: { id: 'cust-1', type: 'customers' } } },
+            },
+          ],
+        })
+      )
 
-      const result = JsonApiSerializer.serialize('orders', data);
-      expect(result.relationships?.customer).toEqual({
-        data: { id: '100', type: 'customers' },
-      });
-    });
+      expect(decoded.data.customer.name).toBe('Jane')
+      expect(decoded.data.customer.orders[0].customer.name).toBe('Jane')
+    })
 
-    it('should handle to-many relationships', () => {
-      const data = {
-        id: '1',
-        name: 'Order',
-        items: [
-          { id: '10', type: 'items' },
-          { id: '11', type: 'items' },
-        ],
-      };
+    it('decodes arrays of resources', () => {
+      const decoded = JsonApiSerializer.decode(
+        JSON.stringify({
+          data: [
+            { id: '1', type: 'orders', attributes: { status: 'draft' } },
+            { id: '2', type: 'orders', attributes: { status: 'reserved' } },
+          ],
+          meta: { stats: { total: { count: 2 } } },
+        })
+      )
 
-      const result = JsonApiSerializer.serialize('orders', data);
-      expect(result.relationships?.items).toEqual({
-        data: [
-          { id: '10', type: 'items' },
-          { id: '11', type: 'items' },
-        ],
-      });
-    });
+      expect(decoded.data).toHaveLength(2)
+      expect(decoded.data[1].status).toBe('reserved')
+      expect(decoded.meta.stats.total.count).toBe(2)
+    })
+  })
 
-    it('should transform dates to ISO strings', () => {
-      const date = new Date('2024-01-01T00:00:00Z');
-      const data = {
-        id: '1',
-        created_at: date,
-      };
+  describe('encode', () => {
+    it('converts Date instances to ISO 8601 strings', () => {
+      const encoded = JsonApiSerializer.encode({
+        data: { type: 'orders', attributes: { starts_at: new Date('2024-01-01T00:00:00Z') } },
+      })
 
-      const result = JsonApiSerializer.serialize('orders', data);
-      expect(result.attributes?.created_at).toBe('2024-01-01T00:00:00.000Z');
-    });
+      expect(JSON.parse(encoded).data.attributes.starts_at).toBe('2024-01-01T00:00:00.000Z')
+    })
 
-    it('should not include id and type in attributes', () => {
-      const data = {
-        id: '1',
-        type: 'should-not-appear',
-        name: 'Test',
-      };
-
-      const result = JsonApiSerializer.serialize('products', data);
-      expect(result.attributes).toEqual({ name: 'Test' });
-      expect(result.attributes).not.toHaveProperty('id');
-      expect(result.attributes).not.toHaveProperty('type');
-    });
-
-    it('should accept custom id parameter', () => {
-      const data = {
-        name: 'Test',
-      };
-
-      const result = JsonApiSerializer.serialize('products', data, '999');
-      expect(result.id).toBe('999');
-    });
-  });
-
-  describe('parseDates', () => {
-    it('should parse ISO date strings', () => {
-      const data = {
-        created_at: '2024-01-01T00:00:00Z',
-        name: 'Test',
-      };
-
-      const result = JsonApiSerializer.parseDates(data);
-      expect(result.created_at).toBeInstanceOf(Date);
-      expect(result.name).toBe('Test');
-    });
-
-    it('should parse dates in nested objects', () => {
-      const data = {
-        order: {
-          created_at: '2024-01-01T00:00:00Z',
-        },
-      };
-
-      const result = JsonApiSerializer.parseDates(data);
-      expect(result.order.created_at).toBeInstanceOf(Date);
-    });
-
-    it('should parse dates in arrays', () => {
-      const data = [
-        { created_at: '2024-01-01T00:00:00Z' },
-        { created_at: '2024-01-02T00:00:00Z' },
-      ];
-
-      const result = JsonApiSerializer.parseDates(data);
-      expect(result[0].created_at).toBeInstanceOf(Date);
-      expect(result[1].created_at).toBeInstanceOf(Date);
-    });
-
-    it('should not parse non-date strings', () => {
-      const data = {
-        email: 'test@example.com',
-        status: 'active',
-      };
-
-      const result = JsonApiSerializer.parseDates(data);
-      expect(result.email).toBe('test@example.com');
-      expect(result.status).toBe('active');
-    });
-
-    it('should handle null and undefined', () => {
-      expect(JsonApiSerializer.parseDates(null)).toBeNull();
-      expect(JsonApiSerializer.parseDates(undefined)).toBeUndefined();
-    });
-  });
-});
+    it('encodes nested arrays and objects', () => {
+      const encoded = JsonApiSerializer.encode({ a: [{ b: new Date('2024-01-01T00:00:00Z') }], c: 1 })
+      expect(JSON.parse(encoded)).toEqual({ a: [{ b: '2024-01-01T00:00:00.000Z' }], c: 1 })
+    })
+  })
+})

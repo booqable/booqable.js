@@ -1,289 +1,413 @@
-# Booqable Node.js Client
+# Booqable.js
 
-Official TypeScript/Node.js client library for the [Booqable API](https://developers.booqable.com/).
+JavaScript/TypeScript toolkit for the [Booqable API](https://developers.booqable.com/).
+
+[Booqable](https://booqable.com) is a rental management platform that helps businesses manage their rental inventory, customers, and orders. This library provides a JavaScript interface to interact with all Booqable API endpoints.
+
+It is a faithful port of the [booqable.rb](https://github.com/booqable/booqable.rb) Ruby gem with **zero runtime dependencies**: it is built on the global `fetch` and Web Crypto, so it runs in Node.js (≥ 20), browsers, and edge runtimes such as Cloudflare Workers.
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Making requests](#making-requests)
+- [Authentication](#authentication)
+- [Configuration](#configuration)
+- [Pagination](#pagination)
+- [Rate limiting](#rate-limiting)
+- [Resources](#resources)
+- [Parsing JSON:API payloads](#parsing-jsonapi-payloads)
+- [Strict attribute reads](#strict-attribute-reads)
+- [Error handling](#error-handling)
+- [Development](#development)
 
 ## Installation
 
 ```bash
-npm install @booqable/client
+npm install booqable/booqable.js
 # or
-yarn add @booqable/client
+bun add github:booqable/booqable.js
 ```
 
-## Quick Start
+## Making requests
+
+API methods are available on the module-level default export (consuming module-level configuration) or on a client instance.
 
 ```typescript
-import Booqable from '@booqable/client';
+import Booqable from '@booqable/client'
 
-// Configure the client
+// Provide authentication credentials
 Booqable.configure({
-  apiKey: 'your_api_key',
-  companyId: 'your_company_id'
-});
+  apiKey: 'your_api_key_here',
+  companyId: 'your_company_id',
+})
 
 // Fetch orders
-const orders = await Booqable.orders.list({
-  include: 'customer',
-  filter: { status: 'reserved' },
-  sort: '-created_at'
-});
-
-// Create a customer
-const customer = await Booqable.customers.create({
-  name: 'John Doe',
-  email: 'john@example.com'
-});
+const orders = await Booqable.orders.list()
 ```
 
-## Features
-
-- ✅ Full TypeScript support with type definitions
-- ✅ Support for all Booqable API resources (70+ endpoints)
-- ✅ Multiple authentication methods (API Key, OAuth2, Single-Use Tokens)
-- ✅ Automatic pagination with cursor support
-- ✅ JSON:API format serialization/deserialization
-- ✅ Comprehensive error handling
-- ✅ Rate limiting tracking
-- ✅ Automatic retry with exponential backoff
-- ✅ Request signing for server-to-server communication
-
-## Configuration
-
-### Environment Variables
-
-```bash
-BOOQABLE_API_KEY=your_api_key
-BOOQABLE_COMPANY_ID=your_company_id
-```
-
-### Module-Level Configuration
+or
 
 ```typescript
-import Booqable from '@booqable/client';
+import { BooqableClient } from '@booqable/client'
 
-Booqable.configure({
-  apiKey: process.env.BOOQABLE_API_KEY,
-  companyId: process.env.BOOQABLE_COMPANY_ID,
-  autoPaginate: true,
-  perPage: 50
-});
-```
-
-### Instance-Level Configuration
-
-```typescript
-import { BooqableClient } from '@booqable/client';
-
+// Create a client instance
 const client = new BooqableClient({
-  apiKey: 'your_api_key',
-  companyId: 'your_company_id'
-});
+  apiKey: 'your_api_key_here',
+  companyId: 'your_company_id',
+})
 
-const orders = await client.orders.list();
+// Fetch orders
+const orders = await client.orders.list()
 ```
 
 ## Authentication
 
-### API Key (Recommended)
+Booqable supports several authentication methods to suit different use cases:
+
+### API Key Authentication (Recommended)
+
+The simplest way to authenticate is with an API key:
 
 ```typescript
 Booqable.configure({
-  apiKey: 'your_api_key',
-  companyId: 'your_company_id'
-});
+  apiKey: 'your_api_key_here',
+  companyId: 'your_company_id',
+})
 ```
 
-### OAuth2
+Generate your API key from your Booqable account settings. [Learn more about API keys](https://developers.booqable.com/#authentication-access-token).
+
+### OAuth2 Authentication
+
+For applications that need to act on behalf of multiple users:
 
 ```typescript
-import { BooqableClient } from '@booqable/client';
-
 const client = new BooqableClient({
-  clientId: 'your_client_id',
-  clientSecret: 'your_client_secret',
+  clientId: 'your_oauth_client_id',
+  clientSecret: 'your_oauth_client_secret',
   companyId: 'your_company_id',
   readToken: async () => {
-    // Load token from storage
-    return JSON.parse(await fs.readFile('token.json', 'utf-8'));
+    // Return the stored token hash
+    return JSON.parse(await fs.readFile('token.json', 'utf8'))
   },
   writeToken: async (token) => {
-    // Save token to storage
-    await fs.writeFile('token.json', JSON.stringify(token));
-  }
-});
+    // Store the token hash
+    await fs.writeFile('token.json', JSON.stringify(token))
+  },
+})
 
-// Exchange authorization code for token
-const token = await client.authenticateWithCode(code, redirectUri);
+// Complete the OAuth flow (e.g. in your callback handler)
+await client.authenticateWithCode(params.code)
 ```
 
-### Single-Use Token (JWT)
+Access tokens are refreshed automatically when they are expired or about to
+expire (a 60-second buffer absorbs network latency and clock skew), and the
+refreshed token is persisted through `writeToken`.
+
+#### Serializing concurrent token refreshes
+
+When multiple processes share the same OAuth token (e.g. the same installation
+serving concurrent requests), pass an `aroundRefreshToken` callable to
+serialize the read + expiry-check + refresh sequence. The client awaits the
+callable once per request; the host application decides how to lock.
 
 ```typescript
-import { BooqableClient } from '@booqable/client';
+new BooqableClient({
+  // ...other oauth options...
+  aroundRefreshToken: async (refresh) => {
+    await installation.withAdvisoryLock(async () => {
+      await installation.reload()
+      await refresh()
+    })
+  },
+})
+```
 
+The library itself has no locking dependency — `aroundRefreshToken` is just an
+async function that receives the refresh sequence to run.
+
+### Single-Use Token Authentication
+
+For server-to-server communication requiring enhanced security (request
+signing — every request carries a unique JWT bound to its method, path, and
+body):
+
+```typescript
 const client = new BooqableClient({
+  singleUseToken: 'your_token_id',
   singleUseTokenAlgorithm: 'HS256',
-  singleUseTokenSecret: 'your_shared_secret',
-  singleUseTokenCompanyId: 'your_company_id',
-  singleUseTokenExpirationPeriod: 600 // seconds
-});
+  singleUseTokenSecret: 'your_signing_secret',
+  singleUseTokenCompanyId: 'company_uuid',
+  singleUseTokenUserId: 'user_uuid',
+  companyId: 'your_company_id',
+})
 ```
 
-## Usage
+Supports HS256 (HMAC), RS256 (RSA), and ES256 (ECDSA) algorithms. RS256/ES256
+private keys must be PEM-encoded PKCS#8 (`-----BEGIN PRIVATE KEY-----`).
+[Learn more about request signing](https://developers.booqable.com/#authentication-request-signing).
 
-### List Resources
+### Environment Variables
 
-```typescript
-const orders = await Booqable.orders.list({
-  include: 'customer,items',
-  filter: { status: 'reserved' },
-  sort: '-created_at',
-  page: { size: 25, number: 1 }
-});
+In Node.js, all authentication options can be configured via environment variables:
+
+```bash
+export BOOQABLE_API_KEY="your_api_key_here"
+export BOOQABLE_COMPANY_ID="your_company_id"
+export BOOQABLE_CLIENT_ID="your_oauth_client_id"
+export BOOQABLE_CLIENT_SECRET="your_oauth_client_secret"
 ```
 
-### Find by ID
+## Configuration
 
 ```typescript
-const order = await Booqable.orders.find('order_id', {
-  include: 'customer,items'
-});
+Booqable.configure({
+  apiKey: 'your_api_key_here',
+  companyId: 'your_company_id',
+  apiDomain: 'booqable.com', // Default
+  apiVersion: 4,             // Default
+  perPage: 25,               // Default pagination size
+  autoPaginate: true,        // Auto-fetch all pages
+})
 ```
 
-### Create
+Options are camelCase; the snake_case spellings used by booqable.rb
+(`api_key`, `company_id`, …) are accepted as aliases. Unknown options throw
+an error with a "did you mean" suggestion.
+
+### Per-client configuration
 
 ```typescript
-const customer = await Booqable.customers.create({
-  name: 'John Doe',
-  email: 'john@example.com'
-});
-```
-
-### Update
-
-```typescript
-const order = await Booqable.orders.update('order_id', {
-  status: 'started'
-});
-```
-
-### Delete
-
-```typescript
-await Booqable.customers.delete('customer_id');
+const client = new BooqableClient({
+  apiKey: 'your_api_key_here',
+  companyId: 'your_company_id',
+  perPage: 50,
+  autoPaginate: false,
+})
 ```
 
 ## Pagination
 
-### Manual Pagination
+### Manual pagination
 
 ```typescript
-const page1 = await Booqable.orders.list({
-  page: { size: 25, number: 1 }
-});
+// Fetch first page
+const orders = await Booqable.orders.list({ page: { size: 25, number: 1 } })
 
-const page2 = await Booqable.orders.list({
-  page: { size: 25, number: 2 }
-});
+// Fetch next page
+const nextOrders = await Booqable.orders.list({ page: { size: 25, number: 2 } })
 ```
 
-### Auto-Pagination
+### Auto-pagination
 
 ```typescript
-const client = new BooqableClient({
-  apiKey: 'your_api_key',
-  autoPaginate: true
-});
+Booqable.configure({ autoPaginate: true })
 
-// Automatically fetches all pages
-const allOrders = await client.orders.list();
+// This will automatically fetch ALL orders across all pages
+const allOrders = await Booqable.orders.list()
 ```
 
-## Error Handling
+## Rate limiting
+
+Rate limit information is tracked from every response:
 
 ```typescript
-import { NotFound, TooManyRequests, UnprocessableEntity } from '@booqable/client';
+await Booqable.orders.list()
+
+const rateLimit = Booqable.rateLimit()
+console.log(`Remaining requests: ${rateLimit.remaining}`)
+console.log(`Limit: ${rateLimit.limit}`)
+console.log(`Resets in: ${rateLimit.resetsIn} seconds`)
+```
+
+When the API rate-limits a request, the thrown `TooManyRequests` error carries
+the same information on its `context` property.
+
+### Automatic retries
+
+Every idempotent request is retried up to two times when it fails with a
+server error or a network error, with exponential backoff.
+
+```typescript
+Booqable.configure({ noRetries: true }) // Disable automatic retries
+```
+
+## Resources
+
+All Booqable API resources are available through a consistent interface:
+
+### Orders
+
+```typescript
+// List orders with filtering and includes
+const orders = await Booqable.orders.list({
+  include: 'customer,items',
+  filter: { status: 'reserved' },
+  sort: '-created_at',
+})
+
+// `all` is an alias for `list`
+const sameOrders = await Booqable.orders.all({ filter: { status: 'reserved' } })
+
+// Find a specific order
+const order = await Booqable.orders.find('order_id', { include: 'customer,items' })
+order.customer.name
+
+// Create an order
+const newOrder = await Booqable.orders.create({
+  starts_at: '2024-01-01T00:00:00Z',
+  stops_at: '2024-01-02T00:00:00Z',
+  status: 'draft',
+})
+newOrder.status // => 'draft'
+
+// Update an order
+const updatedOrder = await Booqable.orders.update('order_id', { stops_at: '2024-01-03T00:00:00Z' })
+
+// Delete an order
+const deletedOrder = await Booqable.orders.delete('order_id')
+deletedOrder.id // => 'order_id'
+```
+
+### Customers
+
+```typescript
+const customers = await Booqable.customers.list({ filter: { name: 'John' }, sort: 'created_at' })
+
+const customer = await Booqable.customers.create({ name: 'John Doe', email: 'john@example.com' })
+
+await Booqable.customers.update('customer_id', { name: 'Jane Doe' })
+
+await Booqable.customers.delete('customer_id')
+```
+
+### Available resources
+
+**Core Resources:**
+
+- `orders`, `customers`, `products`, `items`
+- `employees`, `companies`, `locations`
+- `payments`, `documents`
+
+**Inventory Management:**
+
+- `inventory_levels`, `stock_items`, `stock_adjustments`
+- `transfers`, `plannings`, `clusters`
+
+**Configuration:**
+
+- `settings`, `properties`, `tax_rates`
+- `payment_methods`, `email_templates`
+
+**And many more...** See the [full resource list](src/resources.json) for all available endpoints. Resources can also be reached by name via `client.resource('orders')`, and lower-level access is available through `client.get/post/put/patch/delete/request/paginate`.
+
+## Parsing JSON:API payloads
+
+JSON:API formatted data (such as webhook payloads or raw API responses) can be parsed into plain objects with flattened attributes and populated relationships:
+
+```typescript
+const payload = {
+  data: {
+    id: 'abc-123',
+    type: 'customers',
+    attributes: {
+      name: 'John Doe',
+      email: 'john@example.com',
+      created_at: '2024-01-15T10:30:00Z',
+    },
+  },
+}
+
+const customer = Booqable.parseResource(payload)
+customer.id         // => "abc-123"
+customer.name       // => "John Doe"
+customer.email      // => "john@example.com"
+customer.created_at // => Date object (2024-01-15T10:30:00Z)
+```
+
+### With nested relationships
+
+```typescript
+const payload = {
+  data: {
+    id: 'order-123',
+    type: 'orders',
+    attributes: { status: 'reserved' },
+    relationships: {
+      customer: { data: { id: 'customer-456', type: 'customers' } },
+    },
+  },
+  included: [
+    { id: 'customer-456', type: 'customers', attributes: { name: 'Jane Smith' } },
+  ],
+}
+
+const order = Booqable.parseResource(payload)
+order.status        // => "reserved"
+order.customer.name // => "Jane Smith"
+```
+
+`parseResource` accepts a JSON string or an already-parsed object, and is also
+available on client instances and as a named export. `deserializeResource` is
+an alias.
+
+## Strict attribute reads
+
+Reading an attribute that is absent from the API payload throws
+`MissingAttribute` instead of silently returning undefined, so typos and
+renamed API fields fail loudly:
+
+```typescript
+customer.name      // => "John Doe"
+customer.full_name // throws MissingAttribute (key absent from payload)
+```
+
+An attribute that is present in the payload with a null value still returns
+null — only absent keys throw:
+
+```typescript
+order.customer // => null when the payload contains "customer": null
+```
+
+`MissingAttribute` subclasses `TypeError`. To probe for an attribute that may
+be absent, use the `in` operator or the raw attributes:
+
+```typescript
+'customer' in order // => false when the key is absent (lenient probe)
+order.$attrs        // => the underlying plain object
+```
+
+Strictness can be disabled per client with `strictAttributes: false`.
+
+## Error handling
+
+API failures throw typed errors, all subclasses of `BooqableError`:
+
+```typescript
+import Booqable, { BooqableError, NotFound, TooManyRequests } from '@booqable/client'
 
 try {
-  const order = await Booqable.orders.find('order_id');
+  await Booqable.orders.find('invalid_id')
 } catch (error) {
   if (error instanceof NotFound) {
-    console.error('Order not found');
+    // 404
   } else if (error instanceof TooManyRequests) {
-    console.error(`Rate limited! Retry in ${error.context?.resetsIn}s`);
-  } else if (error instanceof UnprocessableEntity) {
-    console.error('Validation errors:', error.errors);
+    console.log(error.context?.resetsIn) // rate limit info
+  } else if (error instanceof BooqableError) {
+    console.log(error.message)        // "GET https://…: 422 - …"
+    console.log(error.responseStatus) // HTTP status
+    console.log(error.errors)         // JSON:API validation errors
   }
 }
 ```
 
-### Available Error Classes
+The full hierarchy mirrors booqable.rb, including body-based refinements such
+as `UnknownAttribute`, `InvalidFilter`, `CompanyNotFound`, `FeatureNotEnabled`,
+`TokenRevoked`, `RefreshTokenRevoked`, and `ReadOnlyMode`.
 
-- `BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`
-- `UnprocessableEntity`, `TooManyRequests`
-- `InternalServerError`, `ServiceUnavailable`
-- And many more specific error types
+## Development
 
-## Rate Limiting
-
-```typescript
-const rateLimit = Booqable.rateLimit();
-
-console.log(`Remaining: ${rateLimit.remaining}/${rateLimit.limit}`);
-console.log(`Resets in: ${rateLimit.resetsIn}s`);
-```
-
-## TypeScript Support
-
-Full TypeScript type definitions included:
-
-```typescript
-import { BooqableClient, Order, Customer } from '@booqable/client';
-
-const client = new BooqableClient({ apiKey: 'key' });
-
-const order: Order = await client.orders.find('id');
-const customer: Customer = order.customer;
-```
-
-## Available Resources
-
-The client provides access to 70+ Booqable API resources:
-
-- `orders`, `customers`, `products`, `items`, `employees`
-- `payments`, `invoices`, `documents`
-- `inventory_levels`, `stock_items`, `plannings`
-- `settings`, `properties`, `tax_rates`
-- And many more!
-
-## Configuration Options
-
-```typescript
-const client = new BooqableClient({
-  // Authentication
-  apiKey: 'key',
-  clientId: 'id',
-  clientSecret: 'secret',
-
-  // API Configuration
-  apiDomain: 'booqable.com',
-  apiVersion: 4, // or 'boomerang'
-  companyId: 'company_id',
-
-  // Request Configuration
-  perPage: 25,
-  autoPaginate: false,
-  timeout: 30000,
-  proxy: 'http://proxy.example.com:8080',
-
-  // Behavior
-  debug: false,
-  noRetries: false,
-  maxRetries: 2
-});
-```
-
-## Testing
+After checking out the repo, run `npm install` to install dependencies.
 
 ```bash
 # Run all tests
@@ -292,25 +416,27 @@ npm test
 # Run tests in watch mode
 npm run test:watch
 
-# Generate coverage report
-npm run test:coverage
+# Lint
+npm run lint
+
+# Build (emits ESM + type declarations to dist/)
+npm run build
 ```
 
-## Contributing
+### Contributing
 
-Contributions are welcome! Please:
+Bug reports and pull requests are welcome on GitHub at https://github.com/booqable/booqable.js.
 
-1. Write tests for new features
-2. Ensure all tests pass (`npm test`)
-3. Follow the existing code style (`npm run lint`)
-4. Update documentation as needed
+## Versioning
+
+This library aims to support and is tested against Node.js 20, 22, and 24,
+and targets any runtime with `fetch` and Web Crypto (browsers, Cloudflare
+Workers, Deno, Bun).
 
 ## License
 
-MIT
+The library is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
 
-## Resources
+---
 
-- [Booqable API Documentation](https://developers.booqable.com/)
-- [Support](https://help.booqable.com/)
-- [GitHub Repository](https://github.com/booqable/booqable.js)
+**Questions?** Check out the [Booqable API documentation](https://developers.booqable.com/) or [open an issue](https://github.com/booqable/booqable.js/issues/new).

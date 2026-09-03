@@ -1,122 +1,76 @@
-import { HttpClient } from './http-client';
-import { ListOptions, FindOptions } from './types';
+import { HttpClient } from './http.js'
+import { strictCollection, strictResource } from './strict-resource.js'
 
+/**
+ * Generic resource proxy for API collections.
+ *
+ * Provides a uniform interface for interacting with API resources using
+ * standard CRUD operations. Each resource proxy handles the JSON:API
+ * formatting and delegates HTTP requests to the underlying client.
+ *
+ * @example Working with orders
+ *   const orders = client.orders
+ *
+ *   await orders.list({ include: 'customer', filter: { status: 'reserved' } })
+ *   await orders.find('123', { include: 'customer' })
+ *   await orders.create({ starts_at: '2024-01-01T00:00:00Z', status: 'draft' })
+ *   await orders.update('123', { status: 'reserved' })
+ *   await orders.delete('123')
+ */
 export class ResourceProxy {
-  constructor(
-    private http: HttpClient,
-    private resourceName: string,
-    private companyId?: string
-  ) {}
+  private http: HttpClient
+  private resource: string
 
-  /**
-   * List resources with optional filtering, sorting, and pagination
-   */
-  async list<T = any>(options: ListOptions = {}): Promise<T[]> {
-    const path = this.buildPath();
-    const params: Record<string, any> = {};
-
-    // Handle include parameter
-    if (options.include) {
-      params.include = Array.isArray(options.include) ? options.include.join(',') : options.include;
-    }
-
-    // Handle filter parameter
-    if (options.filter) {
-      params.filter = options.filter;
-    }
-
-    // Handle sort parameter
-    if (options.sort) {
-      params.sort = Array.isArray(options.sort) ? options.sort.join(',') : options.sort;
-    }
-
-    // Handle pagination
-    if (options.page) {
-      params.page = options.page;
-    } else {
-      // Use default pagination from client options
-      params.page = { size: 25 };
-    }
-
-    // Handle stats parameter
-    if (options.stats) {
-      params.stats = Array.isArray(options.stats) ? options.stats.join(',') : options.stats;
-    }
-
-    // If auto-pagination is enabled, use paginateAll
-    if (this.http['options'].autoPaginate) {
-      return await this.http.paginateAll<T>(path, { ...options, params });
-    }
-
-    return await this.http.get<T[]>(path, { ...options, params });
+  constructor(http: HttpClient, resourceName: string) {
+    this.http = http
+    this.resource = String(resourceName)
   }
 
   /**
-   * Find a single resource by ID
+   * List resources, with optional filtering, sorting, and pagination
+   * (JSON:API query parameters: `include`, `filter`, `sort`, `page`, …).
+   * Fetches all pages when `autoPaginate` is enabled.
    */
-  async find<T = any>(id: string, options: FindOptions = {}): Promise<T> {
-    const path = this.buildPath(id);
-    const params: Record<string, any> = {};
-
-    // Handle include parameter
-    if (options.include) {
-      params.include = Array.isArray(options.include) ? options.include.join(',') : options.include;
-    }
-
-    return await this.http.get<T>(path, { ...options, params });
+  async list(params: Record<string, any> = {}): Promise<any[]> {
+    const records = await this.http.paginate(this.resource, params)
+    return this.wrap(records)
   }
 
-  /**
-   * Create a new resource
-   */
-  async create<T = any>(attributes: Record<string, any> = {}): Promise<T> {
-    const path = this.buildPath();
-
-    const data = {
-      type: this.resourceName,
-      attributes,
-    };
-
-    return await this.http.post<T>(path, data);
+  /** Alias for {@link list}. */
+  async all(params: Record<string, any> = {}): Promise<any[]> {
+    return this.list(params)
   }
 
-  /**
-   * Update an existing resource
-   */
-  async update<T = any>(id: string, attributes: Record<string, any> = {}): Promise<T> {
-    const path = this.buildPath(id);
-
-    const data = {
-      type: this.resourceName,
-      id,
-      attributes,
-    };
-
-    return await this.http.put<T>(path, data);
+  /** Find a specific resource by ID. */
+  async find(id: string, params: Record<string, any> = {}): Promise<any> {
+    const response = await this.http.request('GET', `${this.resource}/${id}`, params)
+    return this.wrap(response?.data)
   }
 
-  /**
-   * Delete a resource
-   */
-  async delete(id: string): Promise<void> {
-    const path = this.buildPath(id);
-    await this.http.delete(path);
+  /** Create a new resource with the given attributes. */
+  async create(attributes: Record<string, any> = {}): Promise<any> {
+    const response = await this.http.request('POST', this.resource, {
+      data: { type: this.resource, attributes },
+    })
+    return this.wrap(response?.data)
   }
 
-  private buildPath(id?: string): string {
-    const parts = ['api', this.resourceName];
+  /** Update an existing resource with the given attributes. */
+  async update(id: string, attributes: Record<string, any> = {}): Promise<any> {
+    const response = await this.http.request('PUT', `${this.resource}/${id}`, {
+      data: { type: this.resource, id, attributes },
+    })
+    return this.wrap(response?.data)
+  }
 
-    if (id) {
-      parts.push(id);
-    }
+  /** Delete an existing resource by ID. Returns the deleted resource. */
+  async delete(id: string): Promise<any> {
+    const response = await this.http.request('DELETE', `${this.resource}/${id}`)
+    return this.wrap(response?.data)
+  }
 
-    let path = '/' + parts.join('/');
-
-    // Add company_id as query parameter if provided
-    if (this.companyId) {
-      path += `?company_id=${encodeURIComponent(this.companyId)}`;
-    }
-
-    return path;
+  private wrap(value: any): any {
+    if (this.http.options.strictAttributes === false || value == null) return value
+    return Array.isArray(value) ? strictCollection(value) : typeof value === 'object' ? strictResource(value) : value
   }
 }
