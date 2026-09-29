@@ -1,7 +1,7 @@
 import { BooqableClient } from './client.js'
 import { ResourceProxy } from './resource-proxy.js'
 import { resourceMethods } from './resources.js'
-import { LastResponse, TokenHash } from './types.js'
+import { ClientOptionsInput, LastResponse, LooseClientOptions, TokenHash } from './types.js'
 import { RateLimit } from './rate-limit.js'
 
 /**
@@ -19,7 +19,7 @@ import { RateLimit } from './rate-limit.js'
  *   const orders = await Booqable.orders.list({ include: 'customer' })
  */
 class BooqableModule {
-  private moduleOptions: Record<string, any> = {}
+  private moduleOptions: LooseClientOptions = {}
   private defaultClient: BooqableClient | null = null
 
   constructor() {
@@ -36,7 +36,7 @@ class BooqableModule {
    * Set module-level configuration options, merged into any previous ones.
    * Accepts an options object or a callback that mutates a draft object.
    */
-  configure(options: Record<string, any> | ((config: Record<string, any>) => void)): this {
+  configure(options: ClientOptionsInput | ((config: LooseClientOptions) => void)): this {
     if (typeof options === 'function') {
       const draft = { ...this.moduleOptions }
       options(draft)

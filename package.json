@@ -26,7 +26,8 @@
     "test:watch": "vitest --watch",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src test",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "keywords": [
     "booqable",

@@ -1,4 +1,4 @@
-import { ClientOptions, LastResponse, TokenHash } from './types.js'
+import { ClientOptions, ClientOptionsInput, LastResponse, TokenHash } from './types.js'
 import { defaultOptions, normalizeOptions } from './options.js'
 import { HttpClient } from './http.js'
 import { ResourceProxy } from './resource-proxy.js'
@@ -29,7 +29,7 @@ export class BooqableClient {
   readonly options: ClientOptions
   readonly http: HttpClient
 
-  constructor(options: Record<string, any> = {}) {
+  constructor(options: ClientOptionsInput = {}) {
     // Use options passed in, but fall back to defaults (including env vars).
     this.options = { ...defaultOptions(), ...normalizeOptions(options) }
     this.http = new HttpClient(this.options)

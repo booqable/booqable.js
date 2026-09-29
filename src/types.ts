@@ -114,6 +114,18 @@ export interface ClientOptions {
   strictAttributes?: boolean
 }
 
+/**
+ * Options with typed camelCase keys, plus snake_case keys and aliases, which
+ * are normalized (and unknown keys rejected) at runtime.
+ */
+export type LooseClientOptions = ClientOptions & Record<string, unknown>
+
+/**
+ * Options as accepted from callers. `ClientOptions` is listed separately
+ * because an interface-typed value isn't assignable to an index signature.
+ */
+export type ClientOptionsInput = ClientOptions | LooseClientOptions
+
 /** A JSON:API document as returned by the Booqable API, after deserialization. */
 export interface JsonApiDocument {
   data?: any
