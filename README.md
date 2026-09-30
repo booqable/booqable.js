@@ -23,9 +23,9 @@ It is a faithful port of the [booqable.rb](https://github.com/booqable/booqable.
 ## Installation
 
 ```bash
-npm install booqable/booqable.js
+npm install @booqable/client
 # or
-bun add github:booqable/booqable.js
+bun add @booqable/client
 ```
 
 ## Making requests
