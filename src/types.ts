@@ -114,6 +114,26 @@ export interface ClientOptions {
   strictAttributes?: boolean
 }
 
+type SnakeCase<Key extends string> = Key extends `${infer Head}${infer Tail}`
+  ? `${Head extends Lowercase<Head> ? Head : `_${Lowercase<Head>}`}${SnakeCase<Tail>}`
+  : Key
+
+type CamelCaseClientOptions = ClientOptions & { skipRetries?: boolean }
+
+/** Every option and alias, camelCase or snake_case. */
+type TypedClientOptions = CamelCaseClientOptions & {
+  [Key in keyof CamelCaseClientOptions as SnakeCase<Key>]: CamelCaseClientOptions[Key]
+}
+
+/** Typed options plus unknown keys, which are rejected at runtime. */
+export type LooseClientOptions = TypedClientOptions & Record<string, unknown>
+
+/**
+ * Options as accepted from callers. The typed branch admits interface-typed
+ * values, which lack the index signature of the loose one.
+ */
+export type ClientOptionsInput = TypedClientOptions | LooseClientOptions
+
 /** A JSON:API document as returned by the Booqable API, after deserialization. */
 export interface JsonApiDocument {
   data?: any
