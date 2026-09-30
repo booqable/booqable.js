@@ -1,6 +1,6 @@
 {
   "name": "@booqable/client",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "JavaScript/TypeScript toolkit for the Booqable API. Zero-dependency port of the booqable.rb gem — works in Node.js, browsers, and edge runtimes such as Cloudflare Workers.",
   "type": "module",
   "main": "./dist/index.js",

@@ -1,4 +1,4 @@
-## [Unreleased]
+## [2.1.1] - 2026-09-30
 
 - Rewrite as a zero-dependency port of booqable.rb v2.1.0. The implementation
   based on `axios` and `jsonwebtoken` is replaced by one built on the global
