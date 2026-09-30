@@ -1,7 +1,7 @@
 ## [Unreleased]
 
-- Rewrite as a zero-dependency port of booqable.rb v2.1.0. The axios and
-  jsonwebtoken based implementation is replaced by one built on the global
+- Rewrite as a zero-dependency port of booqable.rb v2.1.0. The implementation
+  based on `axios` and `jsonwebtoken` is replaced by one built on the global
   `fetch` and Web Crypto, so the client runs in Node.js (>= 20), browsers, and
   edge runtimes such as Cloudflare Workers. The port brings the feature set in
   line with the gem:
