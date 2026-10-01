@@ -46,7 +46,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.8.0",
     "globals": "^17.8.0",
-    "typescript": "^5.5.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.0.7"
   },
   "repository": {
