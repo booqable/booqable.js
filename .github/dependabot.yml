@@ -12,6 +12,10 @@ updates:
       - "team-ow"
       - "review"
     groups:
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
       npm-dependencies:
         update-types:
           - "minor"
